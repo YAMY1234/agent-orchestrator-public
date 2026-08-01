@@ -13,9 +13,13 @@
 
 </div>
 
-![Agent Orchestrator 在一个 task board 中管理十六个实时 coding-agent sessions](docs/assets/dashboard-hero.webp)
+![Agent Orchestrator 通过清晰的 3x2 布局管理六个实时 coding-agent sessions](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>十二个实时 TTY panes、十六个隔离 demo sessions；正在运行、阻塞、观察中和已完成的工作一眼可见。本地路径和地址已统一处理为公开演示内容。</sub></p>
+<p align="center"><sub>清晰的 3x2 工作视图：真实 TTY 输出、易记的 task 名称、优先级颜色、busy/idle 状态、关联文件和操作按钮都保持可见。</sub></p>
+
+![Agent Orchestrator 缩放到十二个实时 coding-agent sessions 的总览](docs/assets/dashboard-overview.webp)
+
+<p align="center"><sub>缩放到十二个实时 panes 时，sidebar 仍然管理全部十六个 sessions，并按 P0、P1、P2、blocked、watching 和 done 清晰分组。本地路径已统一处理为公开演示内容。</sub></p>
 
 Codex 和 Claude Code 在单个 terminal 里很强大。真正困难的是同时跑五个、十个
 terminal 之后：tab 名称开始失去意义，重要任务埋在窗口里，idle 的 agent 看起来
@@ -104,6 +108,12 @@ Agent Orchestrator 会保留多层恢复信息：
 4. 机器重启或 Dashboard 重启后，**Restore saved** 会在后台 tmux 中重新创建
    支持恢复的 session，并把它们放回保存时的 slot。
 5. 已结束 sessions 仍然可以搜索，并可从创建 session 的流程中恢复。
+
+<p align="center">
+  <img src="docs/assets/resume-session.webp" width="488" alt="搜索已经结束的 coding-agent session，并在后台恢复">
+</p>
+
+<p align="center"><sub>可以按 task 名称、agent、workspace、model 或原生 resume ID 搜索，然后在后台或 iTerm 中把 session 恢复回来。</sub></p>
 
 由于不同 agent CLI 暴露的 metadata 不完全一致，恢复能力是 best-effort；但
 Dashboard 会明确展示这些状态，而不是让它们消失在 terminal scrollback 里。

@@ -13,9 +13,13 @@
 
 </div>
 
-![Agent Orchestrator managing sixteen live coding-agent sessions in one task board](docs/assets/dashboard-hero.webp)
+![Agent Orchestrator managing six live coding-agent sessions in a readable 3x2 view](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>Twelve live TTY panes, sixteen isolated demo sessions, and one place to see what is active, blocked, watching, or done. Local paths and addresses are normalized for publication.</sub></p>
+<p align="center"><sub>A readable 3x2 operating view: real TTY output, memorable task names, priority colors, busy and idle state, files, and controls all stay visible.</sub></p>
+
+![Agent Orchestrator zoomed out to twelve live coding-agent sessions](docs/assets/dashboard-overview.webp)
+
+<p align="center"><sub>Zoom out to twelve live panes while the sidebar keeps all sixteen sessions organized across P0, P1, P2, blocked, watching, and done. Local paths are normalized for publication.</sub></p>
 
 Codex and Claude Code are powerful inside a terminal. The difficulty starts
 when five or ten terminals are running at once: tab titles stop being useful,
@@ -114,6 +118,12 @@ Agent Orchestrator keeps several layers of recovery information:
    sessions in background tmux and returns them to their saved slots.
 5. Ended sessions remain searchable and can be resumed from the new-session
    flow.
+
+<p align="center">
+  <img src="docs/assets/resume-session.webp" width="488" alt="Search an ended coding-agent session and resume it in the background">
+</p>
+
+<p align="center"><sub>Search by task name, agent, workspace, model, or native resume ID, then bring the session back in the background or in iTerm.</sub></p>
 
 Recovery is best-effort because the agent CLIs expose different metadata, but
 the Dashboard makes that state explicit instead of leaving it hidden in a
