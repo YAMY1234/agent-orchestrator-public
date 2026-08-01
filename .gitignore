@@ -19,7 +19,7 @@ launchd/com.user.orch-dashboard.plist
 launchd/_token
 
 # Optional local dashboard shortcuts and paths. Keep only the example in Git.
-dashboard.local.json
+/dashboard.local.json
 
 # Machine-specific task recipes may contain local paths, prompts, and logs.
 tasks/local-test.yaml

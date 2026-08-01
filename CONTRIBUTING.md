@@ -9,10 +9,11 @@ Thanks for helping improve Agent Orchestrator.
 3. Install at least one supported agent CLI and `tmux` for manual integration
    testing.
 
-Keep machine-specific shortcuts in `dashboard.local.json`, private task
-recipes in `tasks/private/`, and runtime data in `outputs/`. These paths are
-ignored by Git. Never include tokens, transcripts, local paths, or private
-prompts in an issue or pull request.
+Copy `examples/dashboard.local.json` to `dashboard.local.json` when you want
+machine-specific Dashboard shortcuts. Keep private task recipes in
+`tasks/private/` and runtime data in `outputs/`. These paths are ignored by
+Git. Never include tokens, transcripts, local paths, or private prompts in an
+issue or pull request.
 
 ## Checks
 
