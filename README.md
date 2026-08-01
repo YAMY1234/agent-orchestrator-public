@@ -2,7 +2,7 @@
 
 # Agent Orchestrator
 
-**Run Codex, Claude Code, and Cursor Agent side by side from one local dashboard.**
+**Know what every coding agent is doing, what matters next, and how to get the work back.**
 
 [![CI](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml/badge.svg)](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -13,30 +13,115 @@
 
 </div>
 
-![Agent Orchestrator showing three coding agents in parallel](docs/assets/dashboard-hero.png)
+![Agent Orchestrator managing six Codex and Claude Code TTY sessions](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>Real Dashboard UI with generated demo sessions. No user data appears in these screenshots.</sub></p>
+<p align="center"><sub>Six real TTY-style panes with generated demo tasks. No user data appears in these screenshots.</sub></p>
 
-Agent Orchestrator is a local control plane for CLI coding agents. It starts
-each agent in a tmux session, streams its output into a browser, and gives you
-one place to arrange panes, send input, stop work, and resume sessions later.
+Codex and Claude Code are powerful inside a terminal. The difficulty starts
+when five or ten terminals are running at once: tab titles stop being useful,
+important work gets buried, an idle agent looks like a busy one, and closing a
+window can make a valuable session hard to find again.
 
-<table>
-  <tr>
-    <td width="25%"><strong>See everything</strong><br>Watch many agents without juggling terminal windows.</td>
-    <td width="25%"><strong>Stay in control</strong><br>Send input, change priority, reconnect, or stop from each pane.</td>
-    <td width="25%"><strong>Recover work</strong><br>Capture native resume metadata and reopen ended sessions.</td>
-    <td width="25%"><strong>Keep it local</strong><br>Sessions, logs, tokens, and configuration stay on your machine.</td>
-  </tr>
-</table>
+Agent Orchestrator turns those terminal sessions into a durable, visual task
+board. Each agent gets a name, priority, live state, workspace, files, and a
+path back into the session.
+
+## The control you lose with terminal tabs
+
+| Terminal-only workflow | Agent Orchestrator |
+| --- | --- |
+| Every tab looks the same | Give each task a memorable custom label |
+| Urgent work disappears among other windows | Sort and group with `P0`, `P1`, and `P2` |
+| No quick answer to “is it still working?” | See busy, idle duration, watching, blocked, and done states |
+| The output exists, but the task context is elsewhere | Link its project folder, files, and reference URLs |
+| Closing the terminal loses your mental index | Capture native resume metadata and search ended sessions |
+| A restart destroys your screen layout | Save active sessions and restore supported work into its panes |
+
+## A command center for real parallel work
+
+Choose anything from one focused pane to a dense `5x3` grid. A practical `3x2`
+view gives six substantial Codex and Claude Code tasks enough space to remain
+readable while keeping their controls visible.
+
+- Use full interactive TTY panes or lightweight plain-text streaming.
+- Send input to any agent without switching terminal windows.
+- Zoom, reconnect, stop, close, or open linked files per pane.
+- Drag tasks between slots without restarting the underlying session.
+- Keep Codex, Claude Code, and Cursor Agent work in the same view.
+
+The browser is only the control surface. Background tmux sessions continue
+running when the tab is closed.
+
+## Priority and state you can read at a glance
+
+![Priorities, custom labels, colored states, idle tracking, and goal status](docs/assets/priority-status.webp)
+
+The sidebar is designed to answer “where should I look?” before you read any
+terminal output:
+
+- **P0 — red:** urgent or decision-blocking work.
+- **P1 — amber:** important work that should stay visible.
+- **P2 — blue:** normal background work.
+- **Watching — green:** progressing without immediate intervention.
+- **Blocked — purple:** waiting for input or an external dependency.
+- **Done — dimmed/green:** finished work stays recognizable without competing
+  with active tasks.
+
+Custom labels replace opaque session IDs with names you will remember, such as
+“Auth migration” or “Release automation.” The idle badge shows how long a pane
+has remained quiet. Busy detection waits for sustained activity, so one line of
+terminal noise does not make a task look continuously productive.
+
+Pane borders, priority pills, and terminal status lines work together: you can
+scan red, yellow, blue, and green across the grid, then open only the task that
+actually needs attention.
+
+## Close the terminal without losing the work
+
+The usual failure mode with terminal agents is not that the process crashed;
+it is that the human no longer knows which tab, directory, or resume command
+belonged to the task.
+
+Agent Orchestrator keeps several layers of recovery information:
+
+1. It records the task label, agent type, workspace, logs, and local metadata.
+2. When an agent CLI exposes a native session ID, it captures the corresponding
+   Codex, Claude Code, or Cursor resume command.
+3. **Save active** records the current pane layout and recoverable active
+   sessions.
+4. After a reboot or Dashboard restart, **Restore saved** recreates supported
+   sessions in background tmux and returns them to their saved slots.
+5. Ended sessions remain searchable and can be resumed from the new-session
+   flow.
+
+Recovery is best-effort because the agent CLIs expose different metadata, but
+the Dashboard makes that state explicit instead of leaving it hidden in a
+terminal scrollback buffer.
+
+## Every task has a home with Linked Items
+
+![Linked Items showing a task workspace, file tree, and Markdown status report](docs/assets/linked-items.webp)
+
+A task is more than its terminal transcript. It usually has a project folder,
+plans, test evidence, result tables, screenshots, and a few reference pages.
+Linked Items attaches that context directly to the session.
+
+- Link a whole project or task folder and browse its tree without leaving the
+  Dashboard.
+- Link individual files or URLs when the task spans several locations.
+- Preview Markdown, source files, images, CSV data, and reports.
+- Keep implementation notes, validation evidence, and release artifacts close
+  to the agent that produced them.
+- Recover context quickly when resuming work days later.
+
+The Dashboard does not create a second copy of your project. It remembers the
+real workspace and gives each task a stable place from which to track its work.
 
 ## Quick start
 
-### Run locally
-
 Requirements: macOS or Linux, `tmux`, Python 3.10+, and at least one supported
-agent CLI (`codex`, `claude`, or `agent`). `ttyd` is optional and enables the
-full interactive terminal view.
+agent CLI (`codex`, `claude`, or `agent`). Install `ttyd` for the complete
+interactive terminal experience shown above.
 
 ```bash
 git clone https://github.com/YAMY1234/agent-orchestrator-public.git
@@ -48,9 +133,8 @@ PYTHON=python3.11  # use any installed Python 3.10+
 .venv/bin/python orchestrator.py dashboard
 ```
 
-Open [http://127.0.0.1:7860](http://127.0.0.1:7860), create a session, choose
-an agent, and select **Start in Background**. The dashboard can interact with
-the tmux session without opening another terminal window.
+Open [http://127.0.0.1:7860](http://127.0.0.1:7860), create a session, assign a
+label and priority, then choose **Start in Background**.
 
 For shorter commands in the current shell:
 
@@ -59,92 +143,17 @@ ORCH_REPO="$PWD"
 orch() { "$ORCH_REPO/.venv/bin/python" "$ORCH_REPO/orchestrator.py" "$@"; }
 ```
 
-### Keep it running on macOS
+## A practical daily workflow
 
-The managed installer creates a launchd-safe live copy, builds its own venv,
-installs dependencies, generates a private token, and registers a user
-LaunchAgent:
+1. Create a background session and give it a human label.
+2. Assign `P0`, `P1`, or `P2` so it lands in the right group.
+3. Link the task or project folder so its artifacts stay easy to find.
+4. Watch busy and idle duration instead of opening every pane repeatedly.
+5. Send input only where a decision, permission, or clarification is needed.
+6. Save active sessions before a restart; stop completed work with resume
+   metadata preserved.
 
-```bash
-./launchd/deploy.sh --install
-```
-
-Later code updates only need:
-
-```bash
-./launchd/deploy.sh
-```
-
-The LaunchAgent listens on `127.0.0.1` by default. See
-[Managed macOS install](#managed-macos-install) for configuration details.
-
-## One dashboard, any pane size
-
-The grid supports `1`, `2`, `3`, `2x2`, `3x2`, `3x3`, `4x2`, `4x3`, and
-`5x3` layouts. Drag sessions from the sidebar into panes or use modifier-click
-to fill several panes quickly.
-
-On constrained panes, the session title keeps the left third while the useful
-controls stay right-aligned. Long titles ellipsize; zoom, reconnect, files,
-stop, and close remain available.
-
-<p align="center">
-  <img src="docs/assets/dashboard-compact.png" width="748" alt="Responsive Agent Orchestrator pane with a readable title and right-aligned controls">
-</p>
-
-Each pane supports:
-
-- Live plain-text streaming or an optional same-origin ttyd terminal.
-- Direct input with Enter to send and Shift+Enter for a newline.
-- Per-session priority, terminal theme, linked files, zoom, and reconnect.
-- Graceful stop with best-effort resume metadata capture.
-- Responsive controls for narrow windows and dense multi-pane layouts.
-
-## How it works
-
-```mermaid
-flowchart LR
-    Browser[Browser dashboard] <--> API[FastAPI control plane]
-    API <--> Tmux[tmux sessions]
-    Tmux --> Codex[OpenAI Codex CLI]
-    Tmux --> Claude[Claude Code]
-    Tmux --> Cursor[Cursor Agent CLI]
-    API <--> Data[(Local outputs and metadata)]
-```
-
-- `dashboard.py` provides the API, session discovery, tmux integration,
-  authentication, resume recovery, and ttyd proxy.
-- `static/index.html` is the dependency-free browser UI.
-- `run.sh` launches lightweight Dashboard-created sessions.
-- `outputs/` contains local runtime logs, metadata, and Dashboard state.
-- tmux keeps agents alive independently of the browser.
-
-## Core workflows
-
-### Start and arrange sessions
-
-Create Codex, Claude Code, or Cursor sessions from the browser. Background mode
-is the recommended default. Switch layouts at any time and move a session
-without restarting it.
-
-### Send input
-
-Every pane has its own input box. The Dashboard sends text and key commands
-through tmux to the underlying agent, so you can unblock several tasks without
-switching terminals.
-
-### Stop and resume
-
-The Stop control terminates the agent cleanly when possible and records the
-native resume command exposed by its CLI:
-
-- Codex: `codex resume <session-id>`
-- Claude Code: `claude --resume <session-id>`
-- Cursor Agent: `agent --resume <chat-id>`
-
-Ended sessions with usable metadata appear in the resume picker.
-
-### Start from the CLI
+## Start sessions from the CLI
 
 ```bash
 orch run                              # Cursor Agent
@@ -153,61 +162,22 @@ orch run codex                        # OpenAI Codex CLI
 orch run codex investigate /path/to/project
 ```
 
-Supported shortcuts include `--model`, `--effort` (Claude Code only),
-`--fast`, `--think`, `--opus`, `--sonnet`, `--codex`, and `--codex-high`.
+The browser and CLI workflows use the same local sessions and metadata.
 
-## Remote access
+## Keep it running on macOS
 
-Authentication is mandatory whenever the Dashboard binds beyond localhost.
-The CLI rejects a non-loopback `--host` unless a token is configured.
-
-```bash
-# LAN or Tailscale
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 0.0.0.0 --https
-
-# Cloudflare Tunnel
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 127.0.0.1
-cloudflared tunnel --url http://localhost:7860
-
-# ngrok
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 127.0.0.1
-ngrok http 7860
-```
-
-For non-localhost browser access, use `--https` or an HTTPS tunnel so secure
-browser features such as clipboard access remain available.
-
-### URL helper
+The managed installer creates an isolated runtime, installs dependencies,
+generates a private token, and registers a user LaunchAgent:
 
 ```bash
-orch url            # Detect the live scheme, print, and copy the best URL
-orch url -q         # Print only the URL
-orch url --json     # Show all reachable candidates
-orch url --no-copy  # Do not touch the clipboard
+./launchd/deploy.sh --install  # first install
+./launchd/deploy.sh            # later code updates
+./launchd/deploy.sh --dry-run  # preview an update
 ```
 
-The helper uses the live Dashboard's bind metadata, prefers loopback when the
-service is local-only, and reads the token from the environment or its private
-cache. Startup and access logs do not print the token.
-
-## Managed macOS install
-
-```bash
-./launchd/deploy.sh --install  # first install or rebuild
-./launchd/deploy.sh            # sync code and restart
-./launchd/deploy.sh --dry-run  # preview the sync
-```
-
-The installer:
-
-1. Syncs tracked application files to `~/projects/agent-orchestrator/` to
-   avoid macOS background-process privacy restrictions around Documents,
-   Desktop, and Downloads.
-2. Creates and maintains a dedicated live `.venv`.
-3. Preserves runtime outputs, projects, certificates, local configuration,
-   and private task recipes across deployments.
-4. Stores the generated token and LaunchAgent plist with user-only
-   permissions.
+It preserves outputs, linked projects, certificates, local configuration, and
+private task recipes across deployments. The LaunchAgent listens on
+`127.0.0.1` by default.
 
 Useful overrides:
 
@@ -217,53 +187,45 @@ ORCH_DASHBOARD_PORT=9000 ./launchd/deploy.sh --install
 ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install
 ```
 
-Remote binds still require token authentication.
+## Remote access
 
-## Local configuration and data
-
-Copy `dashboard.local.example.json` to `dashboard.local.json` for
-machine-specific shortcuts. The local file is ignored by Git. Supported fields
-include `notes_url`, `projects_browser_url`, `git_status_url`, and
-`projects_root`; matching `ORCH_*` environment variables take precedence.
-
-Runtime data defaults to `outputs/`. Use `ORCH_OUTPUTS_DIR` to relocate it and
-`ORCH_PROJECTS_DIR` to relocate organized archives. These directories may
-contain prompts, transcripts, paths, and resume metadata and must never be
-published.
-
-## Advanced: YAML recipe runner
-
-The older dependency-aware YAML runner remains available:
+Non-loopback binds require authentication. For LAN or VPN access, use a token
+and HTTPS:
 
 ```bash
-orch start tasks/example.yaml
-orch resume outputs/example-20260515-120000
-orch status
+ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 0.0.0.0 --https
 ```
 
-Dashboard-managed background sessions are the recommended workflow for new
-users. Keep recipes containing local paths or private prompts under the ignored
-`tasks/private/` directory.
+The URL helper detects the running Dashboard's protocol and bind address:
 
-## Security
+```bash
+orch url            # print and copy the best authenticated URL
+orch url -q         # print only the URL
+orch url --json     # inspect all reachable candidates
+```
 
-Agent Orchestrator can send input to local tmux sessions and should be treated
-as a privileged developer tool.
+## Local-first security
+
+Agent Orchestrator can send input to local terminal sessions and should be
+treated as a privileged developer tool.
 
 - The default bind is localhost-only.
-- Non-loopback binds require authentication.
-- Token values are stored outside the tracked tree with user-only permissions.
+- Non-loopback access requires a token.
+- Tokens are stored outside the tracked source tree with user-only permissions.
+- Runtime data remains local and may contain prompts, transcripts, paths, and
+  resume metadata.
 - Never publish `outputs/`, `projects/`, `.dashboard-certs/`, local
   configuration, or private task recipes.
 
-See [SECURITY.md](SECURITY.md) for reporting and deployment guidance.
+See [SECURITY.md](SECURITY.md) for deployment and vulnerability-reporting
+guidance. Development checks and contribution instructions are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Project status
+## Current scope
 
-The Dashboard-first workflow is the primary supported path. Resume support is
-best-effort because each agent CLI exposes different metadata, and terminal
-rendering can vary by CLI. The project targets trusted, local developer
-machines rather than hosted multi-user deployments.
+The Dashboard-first workflow is the primary supported experience. Resume is
+best-effort because each agent CLI exposes different session metadata. The
+project targets trusted local developer machines rather than hosted multi-user
+deployments. The older YAML recipe runner remains available for advanced use.
 
-Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Agent
-Orchestrator is released under the [MIT License](LICENSE).
+Agent Orchestrator is released under the [MIT License](LICENSE).

@@ -2,7 +2,7 @@
 
 # Agent Orchestrator
 
-**在一个本地 Dashboard 里，同时运行和管理 Codex、Claude Code 与 Cursor Agent。**
+**随时知道每个 coding agent 在做什么、哪个最重要，以及如何把工作完整找回来。**
 
 [![CI](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml/badge.svg)](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -13,30 +13,102 @@
 
 </div>
 
-![Agent Orchestrator 同时展示三个 coding agent](docs/assets/dashboard-hero.png)
+![Agent Orchestrator 同时管理六个 Codex 和 Claude Code TTY sessions](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>真实 Dashboard 界面，使用完全虚构的 demo sessions；截图中不包含用户数据。</sub></p>
+<p align="center"><sub>六个真实 TTY 风格 pane，内容来自虚构 demo tasks；截图中不包含用户数据。</sub></p>
 
-Agent Orchestrator 是面向 CLI coding agents 的本地控制平面。它把每个
-agent 运行在独立 tmux session 中，将输出持续送到浏览器，并让你在一个地方
-排列窗格、发送输入、停止任务以及恢复之前的 session。
+Codex 和 Claude Code 在单个 terminal 里很强大。真正困难的是同时跑五个、十个
+terminal 之后：tab 名称开始失去意义，重要任务埋在窗口里，idle 的 agent 看起来
+和 busy 的一样，而一旦关闭窗口，之后可能连这个 session 在哪里都想不起来。
 
-<table>
-  <tr>
-    <td width="25%"><strong>全局可见</strong><br>同时观察多个 agent，不再来回切换终端窗口。</td>
-    <td width="25%"><strong>随时接管</strong><br>在每个 pane 中发送输入、调整优先级、重连或停止。</td>
-    <td width="25%"><strong>恢复工作</strong><br>捕获原生 resume metadata，重新打开已经结束的 session。</td>
-    <td width="25%"><strong>数据留在本机</strong><br>Sessions、logs、tokens 和配置默认都只存在本地。</td>
-  </tr>
-</table>
+Agent Orchestrator 把这些 terminal sessions 变成一个可持续恢复、可视化的 task
+board。每个 agent 都有自己的名称、优先级、实时状态、workspace、关联文件和
+恢复入口。
+
+## Terminal tabs 无法提供的掌控感
+
+| 只使用 terminal | Agent Orchestrator |
+| --- | --- |
+| 每个 tab 看起来都差不多 | 为 task 设置容易记住的自定义标签 |
+| 紧急任务和普通任务混在一起 | 使用 `P0`、`P1`、`P2` 排序和分组 |
+| 无法快速判断“它还在工作吗？” | 直接查看 busy、idle 时长、watching、blocked 和 done |
+| 输出在 terminal，task 文件却散落在别处 | 将项目文件夹、单个文件和参考 URL 绑定到 session |
+| 关闭 terminal 后失去自己的记忆索引 | 捕获原生 resume metadata，并搜索已结束 sessions |
+| 重启后原来的工作区布局消失 | 保存 active sessions，并把支持恢复的任务放回原 pane |
+
+## 为真实复杂工作准备的指挥中心
+
+从一个专注 pane 到高密度 `5x3` 布局都可以自由选择。实用的 `3x2` 布局能同时
+容纳六个 Codex 和 Claude Code 复杂任务，并让输出和操作按钮保持清晰。
+
+- 使用完整交互式 TTY，或更轻量的纯文本流。
+- 不用切换 terminal，就能直接向任意 agent 发送输入。
+- 每个 pane 都能放大、重连、停止、关闭或打开关联文件。
+- 在不同 slot 之间拖动 task，不会重启底层 session。
+- 将 Codex、Claude Code 和 Cursor Agent 放在同一个视图中管理。
+
+浏览器只是控制面；即使关闭页面，后台 tmux sessions 仍会继续运行。
+
+## 一眼看懂优先级和实时状态
+
+![优先级、自定义标签、状态颜色、idle 跟踪和 goal 状态](docs/assets/priority-status.webp)
+
+Sidebar 的目标是在你阅读 terminal 输出之前，先回答“我现在应该看哪里”：
+
+- **P0 — 红色：** 紧急任务，或者正在阻塞关键决策的任务。
+- **P1 — 黄色：** 重要且需要持续关注的工作。
+- **P2 — 蓝色：** 可以稳定放在后台推进的常规工作。
+- **Watching — 绿色：** 正在推进，目前不需要人工介入。
+- **Blocked — 紫色：** 等待输入、权限或外部依赖。
+- **Done — 弱化/绿色：** 已完成，但仍然保持清晰可识别。
+
+自定义标签会把难记的 session ID 变成 “Auth migration” 或 “Release
+automation” 这样的任务名称。Idle badge 会显示 pane 已经安静了多久；busy
+检测要求输出持续变化，因此一行偶然的 terminal 噪声不会让 task 看起来一直在
+工作。
+
+Pane 边框、优先级标签和 terminal 底部状态会形成统一的视觉语言：先扫描整个
+grid 里的红、黄、蓝、绿，再打开真正需要关注的 task。
+
+## Terminal 关掉，工作仍然找得回来
+
+Terminal agent 最常见的问题并不是进程崩溃，而是人已经忘了哪个 tab、哪个
+目录、哪个 resume command 对应哪个 task。
+
+Agent Orchestrator 会保留多层恢复信息：
+
+1. 记录 task 标签、agent 类型、workspace、logs 和本地 metadata。
+2. 当 agent CLI 暴露原生 session ID 时，自动捕获对应的 Codex、Claude Code
+   或 Cursor resume command。
+3. **Save active** 保存当前 pane 布局和可以恢复的 active sessions。
+4. 机器重启或 Dashboard 重启后，**Restore saved** 会在后台 tmux 中重新创建
+   支持恢复的 session，并把它们放回保存时的 slot。
+5. 已结束 sessions 仍然可以搜索，并可从创建 session 的流程中恢复。
+
+由于不同 agent CLI 暴露的 metadata 不完全一致，恢复能力是 best-effort；但
+Dashboard 会明确展示这些状态，而不是让它们消失在 terminal scrollback 里。
+
+## 每个 task 都有自己的 Linked Items
+
+![Linked Items 展示 task workspace、文件树和 Markdown 状态报告](docs/assets/linked-items.webp)
+
+一个 task 不只是 terminal transcript。它通常还有项目文件夹、计划、测试证据、
+结果表格、截图和几个参考网页。Linked Items 会把这些上下文直接绑定到 session。
+
+- 绑定整个项目或 task 文件夹，直接在 Dashboard 中浏览目录树。
+- 当 task 跨越多个位置时，可以单独绑定文件或 URL。
+- 预览 Markdown、源码、图片、CSV 数据和报告。
+- 让实现笔记、验证证据和发布产出始终靠近产生它们的 agent。
+- 几天后恢复工作时，可以快速找回完整上下文。
+
+Dashboard 不会复制一份新的项目。它记住真正的 workspace，让每个 task 都有一个
+稳定的入口，方便你持续 track 它的工作和产出。
 
 ## 快速开始
 
-### 本地运行
-
 需要 macOS 或 Linux、`tmux`、Python 3.10+，以及至少一个支持的 agent CLI
-（`codex`、`claude` 或 `agent`）。`ttyd` 是可选依赖，用于提供完整的浏览器
-交互终端。
+（`codex`、`claude` 或 `agent`）。安装 `ttyd` 后即可使用截图中的完整交互式
+terminal 体验。
 
 ```bash
 git clone https://github.com/YAMY1234/agent-orchestrator-public.git
@@ -48,9 +120,8 @@ PYTHON=python3.11  # 可替换为任意已安装的 Python 3.10+
 .venv/bin/python orchestrator.py dashboard
 ```
 
-打开 [http://127.0.0.1:7860](http://127.0.0.1:7860)，创建 session、选择
-agent，然后使用 **Start in Background**。Dashboard 可以直接操作后台 tmux
-session，不需要再弹出一个终端窗口。
+打开 [http://127.0.0.1:7860](http://127.0.0.1:7860)，创建 session、设置标签和
+优先级，然后选择 **Start in Background**。
 
 如果希望当前 shell 里的命令更短：
 
@@ -59,87 +130,16 @@ ORCH_REPO="$PWD"
 orch() { "$ORCH_REPO/.venv/bin/python" "$ORCH_REPO/orchestrator.py" "$@"; }
 ```
 
-### 在 macOS 后台常驻
+## 一个实用的日常工作流
 
-受管安装器会创建 launchd 可安全访问的 live 副本、构建独立 venv、安装依赖、
-生成私有 token，并注册用户级 LaunchAgent：
+1. 创建后台 session，并给它一个人能记住的标签。
+2. 设置 `P0`、`P1` 或 `P2`，让它自动进入正确分组。
+3. 绑定 task 或项目文件夹，让产出始终容易找到。
+4. 观察 busy 和 idle 时长，不再反复打开每一个 pane 检查。
+5. 只在需要决策、权限或补充信息时向 agent 发送输入。
+6. 重启前保存 active sessions；完成后停止任务，同时保留 resume metadata。
 
-```bash
-./launchd/deploy.sh --install
-```
-
-后续更新代码只需要：
-
-```bash
-./launchd/deploy.sh
-```
-
-LaunchAgent 默认只监听 `127.0.0.1`。具体配置见
-[macOS 受管安装](#macos-受管安装)。
-
-## 多 pane 也清晰，小窗口也可用
-
-Dashboard 支持 `1`、`2`、`3`、`2x2`、`3x2`、`3x3`、`4x2`、`4x3` 和
-`5x3` 布局。可以把 sidebar 中的 session 拖进任意 pane，也可以用组合键快速
-填充多个 pane。
-
-空间受限时，session 名称保留左侧三分之一，关键操作在右侧三分之二区域
-右对齐。长名称自动省略，同时保留放大、重连、files、stop 和关闭按钮。
-
-<p align="center">
-  <img src="docs/assets/dashboard-compact.png" width="748" alt="小窗口中的 Agent Orchestrator pane，session 名称清晰且操作按钮右对齐">
-</p>
-
-每个 pane 都支持：
-
-- 实时纯文本输出，或可选的同源 ttyd 完整终端。
-- 独立输入框：Enter 发送，Shift+Enter 换行。
-- Session 优先级、终端主题、关联文件、放大和重连。
-- 尽可能优雅地停止 agent，并捕获 resume metadata。
-- 针对窄窗口和高密度多 pane 布局的响应式控制栏。
-
-## 工作原理
-
-```mermaid
-flowchart LR
-    Browser[浏览器 Dashboard] <--> API[FastAPI 控制平面]
-    API <--> Tmux[tmux sessions]
-    Tmux --> Codex[OpenAI Codex CLI]
-    Tmux --> Claude[Claude Code]
-    Tmux --> Cursor[Cursor Agent CLI]
-    API <--> Data[(本地 outputs 与 metadata)]
-```
-
-- `dashboard.py`：API、session 发现、tmux 集成、认证、resume 恢复和 ttyd
-  代理。
-- `static/index.html`：无前端依赖的单文件浏览器 UI。
-- `run.sh`：Dashboard 创建 session 时使用的轻量启动器。
-- `outputs/`：本地运行日志、metadata 和 Dashboard 状态。
-- tmux：让 agent 独立于浏览器持续运行。
-
-## 核心工作流
-
-### 创建和排列 sessions
-
-在浏览器里创建 Codex、Claude Code 或 Cursor session。推荐默认使用后台模式。
-运行期间可以随时切换布局和移动 session，不会重启 agent。
-
-### 发送输入
-
-每个 pane 都有独立输入框。Dashboard 通过 tmux 向底层 agent 发送文字和按键，
-因此你可以在同一个页面里连续解除多个任务的阻塞。
-
-### Stop 和 Resume
-
-Stop 会尽可能干净地结束 agent，并记录对应 CLI 暴露的原生恢复命令：
-
-- Codex：`codex resume <session-id>`
-- Claude Code：`claude --resume <session-id>`
-- Cursor Agent：`agent --resume <chat-id>`
-
-存在可用 metadata 的已结束 session 会出现在 resume 选择器中。
-
-### 从 CLI 启动
+## 从 CLI 启动 sessions
 
 ```bash
 orch run                              # Cursor Agent
@@ -148,58 +148,21 @@ orch run codex                        # OpenAI Codex CLI
 orch run codex investigate /path/to/project
 ```
 
-还支持 `--model`、`--effort`（仅 Claude Code）、`--fast`、`--think`、
-`--opus`、`--sonnet`、`--codex` 和 `--codex-high` 等快捷参数。
+浏览器和 CLI 工作流使用相同的本地 sessions 和 metadata。
 
-## 远程访问
+## 在 macOS 后台常驻
 
-只要 Dashboard 监听非 localhost 地址，就必须启用认证。没有配置 token 时，CLI
-会拒绝非 loopback 的 `--host`。
-
-```bash
-# 局域网或 Tailscale
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 0.0.0.0 --https
-
-# Cloudflare Tunnel
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 127.0.0.1
-cloudflared tunnel --url http://localhost:7860
-
-# ngrok
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 127.0.0.1
-ngrok http 7860
-```
-
-非 localhost 的浏览器访问应使用 `--https` 或带 HTTPS 的 tunnel，确保剪贴板等
-安全上下文功能正常。
-
-### URL Helper
+受管安装器会创建隔离运行环境、安装依赖、生成私有 token，并注册用户级
+LaunchAgent：
 
 ```bash
-orch url            # 检测正在运行的协议，打印并复制最佳 URL
-orch url -q         # 只输出 URL
-orch url --json     # 显示所有可访问候选地址
-orch url --no-copy  # 不写入剪贴板
+./launchd/deploy.sh --install  # 首次安装
+./launchd/deploy.sh            # 后续代码更新
+./launchd/deploy.sh --dry-run  # 预览更新
 ```
 
-Helper 会读取正在运行的 Dashboard bind metadata；本地服务始终优先返回
-loopback 地址。Token 来自环境变量或仅用户可读的本地缓存，启动日志和访问日志
-不会打印 token。
-
-## macOS 受管安装
-
-```bash
-./launchd/deploy.sh --install  # 首次安装或重建
-./launchd/deploy.sh            # 同步代码并重启
-./launchd/deploy.sh --dry-run  # 预览同步内容
-```
-
-安装器会：
-
-1. 把受跟踪的应用文件同步到 `~/projects/agent-orchestrator/`，避开 macOS
-   后台进程对 Documents、Desktop 和 Downloads 的隐私访问限制。
-2. 创建并维护独立的 live `.venv`。
-3. 在部署时保留 runtime outputs、projects、证书、本地配置和私有 task recipes。
-4. 以仅当前用户可读的权限保存 token 和 LaunchAgent plist。
+部署时会保留 outputs、关联 projects、证书、本地配置和私有 task recipes。
+LaunchAgent 默认只监听 `127.0.0.1`。
 
 常用覆盖项：
 
@@ -209,50 +172,43 @@ ORCH_DASHBOARD_PORT=9000 ./launchd/deploy.sh --install
 ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install
 ```
 
-远程 bind 仍然必须使用 token 认证。
+## 远程访问
 
-## 本地配置和数据
-
-将 `dashboard.local.example.json` 复制为 `dashboard.local.json`，即可添加
-机器相关的快捷入口。该文件会被 Git 忽略。可配置项包括 `notes_url`、
-`projects_browser_url`、`git_status_url` 和 `projects_root`；对应的 `ORCH_*`
-环境变量具有更高优先级。
-
-运行数据默认保存在 `outputs/`。使用 `ORCH_OUTPUTS_DIR` 可以修改位置，
-`ORCH_PROJECTS_DIR` 可以修改归档位置。这些目录可能包含 prompts、transcripts、
-本地路径和 resume metadata，绝不能直接发布。
-
-## 高级功能：YAML Recipe Runner
-
-旧版的依赖感知 YAML runner 仍然保留：
+非 loopback bind 强制要求认证。通过 LAN 或 VPN 访问时，应同时使用 token 和
+HTTPS：
 
 ```bash
-orch start tasks/example.yaml
-orch resume outputs/example-20260515-120000
-orch status
+ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 0.0.0.0 --https
 ```
 
-对于新用户，推荐使用 Dashboard 管理的后台 sessions。包含本地路径或私有 prompt
-的 recipes 应保存在已忽略的 `tasks/private/` 目录。
+URL helper 会检测正在运行的 Dashboard 协议和 bind 地址：
 
-## 安全
+```bash
+orch url            # 打印并复制最佳认证 URL
+orch url -q         # 只输出 URL
+orch url --json     # 检查所有可访问候选地址
+```
 
-Agent Orchestrator 能向本地 tmux sessions 发送输入，应当把它视为一个高权限的
-开发者工具。
+## Local-first 安全模型
+
+Agent Orchestrator 可以向本地 terminal sessions 发送输入，应当把它视为一个
+高权限开发者工具。
 
 - 默认只监听 localhost。
-- 非 loopback bind 强制要求认证。
-- Token 保存在 tracked tree 之外，并使用仅当前用户可读的权限。
+- 非 loopback 访问必须使用 token。
+- Token 保存在 tracked source tree 之外，并使用仅当前用户可读的权限。
+- Runtime 数据保留在本机，其中可能包含 prompts、transcripts、本地路径和
+  resume metadata。
 - 绝不要发布 `outputs/`、`projects/`、`.dashboard-certs/`、本地配置或私有
   task recipes。
 
-漏洞报告和部署建议见 [SECURITY.md](SECURITY.md)。
+部署和漏洞报告说明见 [SECURITY.md](SECURITY.md)，开发检查和贡献指南见
+[CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## 项目状态
+## 当前范围
 
-Dashboard-first 是主要支持的工作流。Resume 能力取决于各 agent CLI 暴露的
-metadata，终端渲染也可能因 CLI 而异。项目当前面向可信的本地开发者机器，而
-不是托管式多用户环境。
+Dashboard-first 是主要支持的体验。由于各 agent CLI 暴露的 session metadata
+不同，resume 能力是 best-effort。项目面向可信的本地开发者机器，而不是托管式
+多用户部署。旧版 YAML recipe runner 仍为高级用户保留。
 
-欢迎贡献，开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。Agent Orchestrator
-采用 [MIT License](LICENSE)。
+Agent Orchestrator 采用 [MIT License](LICENSE)。
