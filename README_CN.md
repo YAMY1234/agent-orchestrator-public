@@ -15,11 +15,15 @@
 
 ![Agent Orchestrator 通过清晰的 3x2 布局管理六个实时 coding-agent sessions](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>清晰的 3x2 工作视图：真实 TTY 输出、易记的 task 名称、优先级颜色、busy/idle 状态、关联文件和操作按钮都保持可见。</sub></p>
+<p align="center"><sub>在较小屏幕上，3x2 布局仍能让每个 session 清晰可读，同时保留 task 名称、优先级颜色、busy/idle 状态、关联文件和操作按钮。</sub></p>
 
 ![Agent Orchestrator 缩放到十二个实时 coding-agent sessions 的总览](docs/assets/dashboard-overview.webp)
 
-<p align="center"><sub>缩放到十二个实时 panes 时，sidebar 仍然管理全部十六个 sessions，并按 P0、P1、P2、blocked、watching 和 done 清晰分组。本地路径已统一处理为公开演示内容。</sub></p>
+<p align="center"><sub>在更大的屏幕上切换到 4x3，一次查看十二个实时 panes；sidebar 仍然管理全部十六个 sessions。本地路径已统一处理为公开演示内容。</sub></p>
+
+![在多任务 Dashboard 上放大任意一个实时 Agent Orchestrator session](docs/assets/focus-mode.webp)
+
+<p align="center"><sub>随时放大任意 session，查看完整 TTY 输出和操作；处理完后回到多任务总览，底层工作不会中断。</sub></p>
 
 Codex 和 Claude Code 在单个 terminal 里很强大。真正困难的是同时跑五个、十个
 terminal 之后：tab 名称开始失去意义，重要任务埋在窗口里，idle 的 agent 看起来
@@ -55,7 +59,7 @@ Dashboard 就是找回这项工作的稳定入口，不再依赖 terminal tab �
 
 ## 为真实复杂工作准备的指挥中心
 
-从一个专注 pane 到高密度 `4x4`、`5x3` 布局都可以自由选择。主图同时展示
+从一个专注 pane 到高密度 `4x4`、`5x3` 布局都可以自由选择。上方总览同时展示
 十二个 panes，sidebar 管理全部十六个 sessions；需要阅读或介入时，可以切换到
 更小的布局，让每个 agent 获得更多空间。
 
@@ -66,10 +70,6 @@ Dashboard 就是找回这项工作的稳定入口，不再依赖 terminal tab �
 - 将 Codex、Claude Code 和 Cursor Agent 放在同一个视图中管理。
 
 浏览器只是控制面；即使关闭页面，后台 tmux sessions 仍会继续运行。
-
-![将一个实时 TTY 放大，专注处理需要介入的 task](docs/assets/focus-mode.webp)
-
-<p align="center"><sub>需要介入时放大一个 pane；处理完后回到完整指挥中心，底层 session 不会中断。</sub></p>
 
 ## 一眼看懂优先级和实时状态
 

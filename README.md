@@ -15,11 +15,15 @@
 
 ![Agent Orchestrator managing six live coding-agent sessions in a readable 3x2 view](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>A readable 3x2 operating view: real TTY output, memorable task names, priority colors, busy and idle state, files, and controls all stay visible.</sub></p>
+<p align="center"><sub>On a smaller screen, the 3x2 layout keeps every session readable while preserving task names, priority colors, busy and idle state, files, and controls.</sub></p>
 
 ![Agent Orchestrator zoomed out to twelve live coding-agent sessions](docs/assets/dashboard-overview.webp)
 
-<p align="center"><sub>Zoom out to twelve live panes while the sidebar keeps all sixteen sessions organized across P0, P1, P2, blocked, watching, and done. Local paths are normalized for publication.</sub></p>
+<p align="center"><sub>On a larger display, switch to 4x3 and watch twelve live panes at once while the sidebar keeps all sixteen sessions organized. Local paths are normalized for publication.</sub></p>
+
+![Any live Agent Orchestrator session expanded over the multi-task dashboard](docs/assets/focus-mode.webp)
+
+<p align="center"><sub>Expand any session to inspect its full TTY output and controls, then return to the multi-task view without interrupting the underlying work.</sub></p>
 
 Codex and Claude Code are powerful inside a terminal. The difficulty starts
 when five or ten terminals are running at once: tab titles stop being useful,
@@ -58,9 +62,10 @@ and interact through the browser TTY.
 
 ## A command center for real parallel work
 
-Choose anything from one focused pane to dense `4x4` and `5x3` grids. The hero
-view uses twelve panes while the sidebar keeps all sixteen sessions organized;
-smaller layouts give each agent more room when you need to read or intervene.
+Choose anything from one focused pane to dense `4x4` and `5x3` grids. The
+overview above uses twelve panes while the sidebar keeps all sixteen sessions
+organized; smaller layouts give each agent more room when you need to read or
+intervene.
 
 - Use full interactive TTY panes or lightweight plain-text streaming.
 - Send input to any agent without switching terminal windows.
@@ -70,10 +75,6 @@ smaller layouts give each agent more room when you need to read or intervene.
 
 The browser is only the control surface. Background tmux sessions continue
 running when the tab is closed.
-
-![A single live TTY expanded for focused intervention](docs/assets/focus-mode.webp)
-
-<p align="center"><sub>Zoom one pane when a task needs attention, then return to the full command center without interrupting the session.</sub></p>
 
 ## Priority and state you can read at a glance
 
