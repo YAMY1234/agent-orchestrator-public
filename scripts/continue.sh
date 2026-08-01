@@ -6,7 +6,8 @@
 # The watcher runs in the background, exactly like run.sh's watcher loop.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$SCRIPT_DIR/outputs}"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$REPO_DIR/outputs}"
 LOG_WRITER="$SCRIPT_DIR/log_writer.py"
 
 SESSION=""

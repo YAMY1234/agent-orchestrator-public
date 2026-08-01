@@ -21,8 +21,8 @@ Run the same lightweight checks used in continuous integration:
 
 ```bash
 python -W error -m unittest discover -s tests -v
-python -m py_compile *.py launchd/*.py
-bash -n ./*.sh launchd/*.sh
+python -m py_compile *.py scripts/*.py launchd/*.py
+bash -n scripts/*.sh launchd/*.sh
 ```
 
 For dashboard changes, also start a local instance, create a background

@@ -9,7 +9,8 @@
 #   orch organize codex            # use OpenAI codex CLI (YOLO mode)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$SCRIPT_DIR/outputs}"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$REPO_DIR/outputs}"
 PROJECTS_DIR="${ORCH_PROJECTS_DIR:-$(dirname "$OUTPUTS_DIR")/projects}"
 
 # Keep macOS malloc debug toggles from leaking into Python helper processes.
@@ -111,7 +112,7 @@ COLS=$(tput cols 2>/dev/null || echo 200)
 ROWS=$(tput lines 2>/dev/null || echo 50)
 
 tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
-    "cd $SCRIPT_DIR && $AGENT_CMD; echo '--- Agent exited ---'; read"
+    "cd $REPO_DIR && $AGENT_CMD; echo '--- Agent exited ---'; read"
 
 # Wait for agent to be ready
 echo "Waiting for agent to initialize..."

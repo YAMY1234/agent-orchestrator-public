@@ -224,7 +224,7 @@ def _format_protected_section(active_dirs: set[str], self_session: str) -> str:
         lines.append(f"- `{d}/`")
     lines.append("")
     lines.append("**额外硬性要求**：清理这一步**严禁使用 `rm -rf`**，请调用")
-    lines.append("`bash prune.sh --dry-run` 先检查，再调用 `bash prune.sh`。")
+    lines.append("`bash scripts/prune.sh --dry-run` 先检查，再调用 `bash scripts/prune.sh`。")
     lines.append("该脚本会重新读取 tmux/session.json/state.json 并把目录移到 `~/.Trash/`。")
     return "\n".join(lines)
 
@@ -275,7 +275,7 @@ PROMPT_TEMPLATE = """\
 ### 3. 清理已归档的 session 目录（**用 prune.sh，强制 tmux 二次校验**）
 
 **绝对禁止使用 `rm -rf`**。不要自己手写清理循环；统一调用仓库自带的
-`prune.sh`，它会在脚本层重新检查 tmux/session.json/state.json，并把通过校验的
+`scripts/prune.sh`，它会在脚本层重新检查 tmux/session.json/state.json，并把通过校验的
 目录移动到 `~/.Trash/`，方便误删后从废纸篓恢复。
 
 #### 3a. 安全校验（每次清理前先做）
@@ -298,13 +298,13 @@ PROMPT_TEMPLATE = """\
 先 dry-run 看候选清单：
 
 ```bash
-bash prune.sh --dry-run
+bash scripts/prune.sh --dry-run
 ```
 
 确认没有活跃 session 出现在候选清单后，再执行：
 
 ```bash
-bash prune.sh
+bash scripts/prune.sh
 ```
 
 #### 3c. 清理三类目录

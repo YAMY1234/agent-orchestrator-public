@@ -55,9 +55,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be moved to Trash.")
     parser.add_argument("--outputs-dir", default="",
-                        help="Override outputs directory. Defaults to ./outputs next to this script.")
+                        help="Override outputs directory. Defaults to <repo>/outputs.")
     parser.add_argument("--projects-dir", default="",
-                        help="Override projects directory. Defaults to ./projects next to this script.")
+                        help="Override projects directory. Defaults to <repo>/projects.")
     parser.add_argument("--trash-dir", default=str(Path.home() / ".Trash"),
                         help="Directory used as Trash target. Defaults to ~/.Trash.")
     parser.add_argument("--protect", action="append", default=[],
@@ -68,8 +68,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
-    outputs_dir = Path(args.outputs_dir).resolve() if args.outputs_dir else script_dir / "outputs"
-    projects_dir = Path(args.projects_dir).resolve() if args.projects_dir else script_dir / "projects"
+    repo_dir = script_dir.parent
+    outputs_dir = Path(args.outputs_dir).resolve() if args.outputs_dir else repo_dir / "outputs"
+    projects_dir = Path(args.projects_dir).resolve() if args.projects_dir else repo_dir / "projects"
     trash_dir = Path(args.trash_dir).expanduser().resolve()
     protected = set(args.protect or [])
 

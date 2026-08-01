@@ -173,7 +173,7 @@ fi
             env["TMUX_TEST_LOG"] = str(log_path)
 
             result = subprocess.run(
-                ["bash", "clean.sh"],
+                ["bash", "scripts/clean.sh"],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

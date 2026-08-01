@@ -19,7 +19,8 @@
 #   codex        → codex CLI default (no --model passed)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$SCRIPT_DIR/outputs}"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$REPO_DIR/outputs}"
 
 # Keep macOS malloc debug toggles from leaking into Python helper processes.
 unset MallocStackLogging MallocStackLoggingNoCompact MallocScribble MallocGuardEdges MallocNanoZone
@@ -313,7 +314,7 @@ cleanup() {
 
     if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
         python3 -c "
-import sys; sys.path.insert(0, '$SCRIPT_DIR')
+import sys; sys.path.insert(0, '$REPO_DIR')
 from notifier import notify_task_done
 notify_task_done('interactive', '$TASK_NAME', 'finished')
 "

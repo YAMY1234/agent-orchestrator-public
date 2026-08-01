@@ -38,6 +38,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = SCRIPT_DIR / "scripts"
 DEFAULT_OUTPUTS_DIR = SCRIPT_DIR / "outputs"
 
 
@@ -304,7 +305,7 @@ def cmd_skip(args):
 
 
 def cmd_continue(args):
-    script = Path(__file__).resolve().parent / "continue.sh"
+    script = SCRIPTS_DIR / "continue.sh"
     if not script.exists():
         print(f"continue.sh not found at {script}")
         sys.exit(1)
@@ -319,7 +320,7 @@ def cmd_continue(args):
 
 
 def cmd_organize(args):
-    script = Path(__file__).resolve().parent / "organize.sh"
+    script = SCRIPTS_DIR / "organize.sh"
     if not script.exists():
         print(f"organize.sh not found at {script}")
         sys.exit(1)
@@ -332,7 +333,7 @@ def cmd_organize(args):
 
 
 def cmd_clean(args):
-    script = Path(__file__).resolve().parent / "clean.sh"
+    script = SCRIPTS_DIR / "clean.sh"
     if not script.exists():
         print(f"clean.sh not found at {script}")
         sys.exit(1)
@@ -343,7 +344,7 @@ def cmd_clean(args):
 
 
 def cmd_prune(args):
-    script = Path(__file__).resolve().parent / "prune.sh"
+    script = SCRIPTS_DIR / "prune.sh"
     if not script.exists():
         print(f"prune.sh not found at {script}")
         sys.exit(1)

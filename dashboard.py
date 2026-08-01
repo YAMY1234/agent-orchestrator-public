@@ -81,6 +81,7 @@ except ImportError:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = SCRIPT_DIR / "scripts"
 DEFAULT_OUTPUTS_DIR = Path(
     os.environ.get("ORCH_OUTPUTS_DIR") or SCRIPT_DIR / "outputs"
 ).expanduser().resolve()
@@ -6766,7 +6767,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         follow up (e.g. inject a first prompt for "clone w/ log").
         """
         model = _clean_cli_model_arg(model)
-        orch_bin = str(SCRIPT_DIR / "run.sh")
+        orch_bin = str(SCRIPTS_DIR / "run.sh")
         runtime_env = os.environ.copy()
         runtime_env["ORCH_OUTPUTS_DIR"] = str(outputs_dir)
         projects_root = _dashboard_client_config()["projects_root"]
@@ -7338,7 +7339,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             raise HTTPException(400,
                 "agent must be 'cursor', 'claude', or 'codex'")
 
-        script = SCRIPT_DIR / "organize.sh"
+        script = SCRIPTS_DIR / "organize.sh"
         if not script.exists():
             raise HTTPException(500, f"organize.sh not found at {script}")
 
