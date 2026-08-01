@@ -13,9 +13,9 @@
 
 </div>
 
-![Agent Orchestrator managing six Codex and Claude Code TTY sessions](docs/assets/dashboard-hero.webp)
+![Agent Orchestrator managing sixteen live coding-agent sessions in one task board](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>Six real TTY-style panes with generated demo tasks. No user data appears in these screenshots.</sub></p>
+<p align="center"><sub>Twelve live TTY panes, sixteen isolated demo sessions, and one place to see what is active, blocked, watching, or done. Local paths and addresses are normalized for publication.</sub></p>
 
 Codex and Claude Code are powerful inside a terminal. The difficulty starts
 when five or ten terminals are running at once: tab titles stop being useful,
@@ -37,11 +37,26 @@ path back into the session.
 | Closing the terminal loses your mental index | Capture native resume metadata and search ended sessions |
 | A restart destroys your screen layout | Save active sessions and restore supported work into its panes |
 
+## One front door for every coding agent
+
+<p align="center">
+  <img src="docs/assets/new-session.webp" width="520" alt="Start a Cursor Agent, Claude Code, or OpenAI Codex CLI session from one dialog">
+</p>
+
+Start Cursor Agent, Claude Code, or OpenAI Codex CLI from the same dialog. Give
+the task a human label, choose its workspace, and launch it directly into a
+background tmux session. The Dashboard then becomes the stable place to find
+that work again instead of relying on a terminal tab title.
+
+The same flow can create a new task or resume a stopped one. You can open an
+iTerm window when you want it, or keep the session entirely in the background
+and interact through the browser TTY.
+
 ## A command center for real parallel work
 
-Choose anything from one focused pane to a dense `5x3` grid. A practical `3x2`
-view gives six substantial Codex and Claude Code tasks enough space to remain
-readable while keeping their controls visible.
+Choose anything from one focused pane to dense `4x4` and `5x3` grids. The hero
+view uses twelve panes while the sidebar keeps all sixteen sessions organized;
+smaller layouts give each agent more room when you need to read or intervene.
 
 - Use full interactive TTY panes or lightweight plain-text streaming.
 - Send input to any agent without switching terminal windows.
@@ -52,9 +67,15 @@ readable while keeping their controls visible.
 The browser is only the control surface. Background tmux sessions continue
 running when the tab is closed.
 
+![A single live TTY expanded for focused intervention](docs/assets/focus-mode.webp)
+
+<p align="center"><sub>Zoom one pane when a task needs attention, then return to the full command center without interrupting the session.</sub></p>
+
 ## Priority and state you can read at a glance
 
-![Priorities, custom labels, colored states, idle tracking, and goal status](docs/assets/priority-status.webp)
+<p align="center">
+  <img src="docs/assets/priority-status.webp" width="360" alt="P0, P1, P2, blocked, watching, and done task groups">
+</p>
 
 The sidebar is designed to answer “where should I look?” before you read any
 terminal output:

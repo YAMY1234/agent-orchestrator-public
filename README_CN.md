@@ -13,9 +13,9 @@
 
 </div>
 
-![Agent Orchestrator 同时管理六个 Codex 和 Claude Code TTY sessions](docs/assets/dashboard-hero.webp)
+![Agent Orchestrator 在一个 task board 中管理十六个实时 coding-agent sessions](docs/assets/dashboard-hero.webp)
 
-<p align="center"><sub>六个真实 TTY 风格 pane，内容来自虚构 demo tasks；截图中不包含用户数据。</sub></p>
+<p align="center"><sub>十二个实时 TTY panes、十六个隔离 demo sessions；正在运行、阻塞、观察中和已完成的工作一眼可见。本地路径和地址已统一处理为公开演示内容。</sub></p>
 
 Codex 和 Claude Code 在单个 terminal 里很强大。真正困难的是同时跑五个、十个
 terminal 之后：tab 名称开始失去意义，重要任务埋在窗口里，idle 的 agent 看起来
@@ -36,10 +36,24 @@ board。每个 agent 都有自己的名称、优先级、实时状态、workspac
 | 关闭 terminal 后失去自己的记忆索引 | 捕获原生 resume metadata，并搜索已结束 sessions |
 | 重启后原来的工作区布局消失 | 保存 active sessions，并把支持恢复的任务放回原 pane |
 
+## 所有 coding agents 的统一入口
+
+<p align="center">
+  <img src="docs/assets/new-session.webp" width="520" alt="从同一个窗口启动 Cursor Agent、Claude Code 或 OpenAI Codex CLI">
+</p>
+
+从同一个窗口启动 Cursor Agent、Claude Code 或 OpenAI Codex CLI。为 task
+设置容易记住的标签、选择 workspace，然后直接放进后台 tmux session。之后
+Dashboard 就是找回这项工作的稳定入口，不再依赖 terminal tab 的标题。
+
+同一个流程既可以创建新 task，也可以恢复已经停止的 session。需要时打开 iTerm；
+不需要额外窗口时，则让它留在后台并通过浏览器 TTY 交互。
+
 ## 为真实复杂工作准备的指挥中心
 
-从一个专注 pane 到高密度 `5x3` 布局都可以自由选择。实用的 `3x2` 布局能同时
-容纳六个 Codex 和 Claude Code 复杂任务，并让输出和操作按钮保持清晰。
+从一个专注 pane 到高密度 `4x4`、`5x3` 布局都可以自由选择。主图同时展示
+十二个 panes，sidebar 管理全部十六个 sessions；需要阅读或介入时，可以切换到
+更小的布局，让每个 agent 获得更多空间。
 
 - 使用完整交互式 TTY，或更轻量的纯文本流。
 - 不用切换 terminal，就能直接向任意 agent 发送输入。
@@ -49,9 +63,15 @@ board。每个 agent 都有自己的名称、优先级、实时状态、workspac
 
 浏览器只是控制面；即使关闭页面，后台 tmux sessions 仍会继续运行。
 
+![将一个实时 TTY 放大，专注处理需要介入的 task](docs/assets/focus-mode.webp)
+
+<p align="center"><sub>需要介入时放大一个 pane；处理完后回到完整指挥中心，底层 session 不会中断。</sub></p>
+
 ## 一眼看懂优先级和实时状态
 
-![优先级、自定义标签、状态颜色、idle 跟踪和 goal 状态](docs/assets/priority-status.webp)
+<p align="center">
+  <img src="docs/assets/priority-status.webp" width="360" alt="P0、P1、P2、blocked、watching 和 done task 分组">
+</p>
 
 Sidebar 的目标是在你阅读 terminal 输出之前，先回答“我现在应该看哪里”：
 
