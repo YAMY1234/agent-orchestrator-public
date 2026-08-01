@@ -1,160 +1,160 @@
+<div align="center">
+
 # Agent Orchestrator
 
-[English README](README.md)
+**在一个本地 Dashboard 里，同时运行和管理 Codex、Claude Code 与 Cursor Agent。**
 
-Agent Orchestrator 是一个本地 Dashboard，用来同时运行和管理多个 CLI 编程
-agent。它会把 Cursor Agent、Claude Code、OpenAI Codex 等 agent 放到 tmux
-session 里运行，持续捕获输出，并通过浏览器界面进行多窗口查看、输入、停止和
-恢复。
+[![CI](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml/badge.svg)](https://github.com/YAMY1234/agent-orchestrator-public/actions/workflows/ci.yml)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![macOS and Linux](https://img.shields.io/badge/macOS%20%7C%20Linux-local--first-24292f)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-当前推荐的使用方式是 Dashboard 优先：
+[English](README.md)
 
-1. 启动 Dashboard。
-2. 在浏览器里创建 session。
-3. 默认使用后台启动，避免打开大量 terminal 窗口。
-4. 通过 Dashboard 查看、输入、停止和恢复 agent。
+</div>
 
-旧的 YAML recipe runner 仍然保留，但不是当前主要支持路径。新使用场景建议优先
-使用 Dashboard 管理后台 session。
+![Agent Orchestrator 同时展示三个 coding agent](docs/assets/dashboard-hero.png)
 
-## 支持能力
+<p align="center"><sub>真实 Dashboard 界面，使用完全虚构的 demo sessions；截图中不包含用户数据。</sub></p>
 
-- 支持 Cursor Agent CLI、Claude Code、OpenAI Codex CLI。
-- 支持后台启动 session，也可以选择打开 terminal 后启动。
-- 支持多 pane 布局：`1`、`2`、`3`、`2x2`、`3x2`、`3x3`、`4x3`、`5x3`。
-- 可以从左侧 sidebar 拖拽 session 到任意 pane。
-- 每个 pane 有独立输入框、复制、Esc、关闭和 mode 控制。
-- 支持纯文本日志流，也支持可选的 ttyd 真终端模式。
-- Stop 时会尽量保存 resume metadata。
-- 如果能恢复出 agent CLI 的 resume 命令，可以从 ended session 里恢复。
-- 支持本机、局域网、VPN 或 tunnel 访问，并支持 token 鉴权。
+Agent Orchestrator 是面向 CLI coding agents 的本地控制平面。它把每个
+agent 运行在独立 tmux session 中，将输出持续送到浏览器，并让你在一个地方
+排列窗格、发送输入、停止任务以及恢复之前的 session。
 
-## 依赖
-
-- macOS 或 Linux，并安装 `tmux`
-- Python 3.10+
-- 至少安装一种 agent CLI：
-  - Cursor Agent CLI: `agent`
-  - Claude Code: `claude`
-  - OpenAI Codex CLI: `codex`
-- `requirements.txt` 里的 Python 依赖
-- 可选：`ttyd`，用于浏览器内完整终端交互
-
-创建隔离环境并安装 Python 依赖：
-
-```bash
-python3.11 -m venv .venv  # 任意 Python 3.10+ 均可
-.venv/bin/python -m pip install -r requirements.txt
-```
-
-下面的例子默认你已经把 `orch` 指向本仓库的 `orchestrator.py`。如果没有这个
-alias 或 wrapper，也可以在仓库根目录运行 `.venv/bin/python orchestrator.py ...`。
+<table>
+  <tr>
+    <td width="25%"><strong>全局可见</strong><br>同时观察多个 agent，不再来回切换终端窗口。</td>
+    <td width="25%"><strong>随时接管</strong><br>在每个 pane 中发送输入、调整优先级、重连或停止。</td>
+    <td width="25%"><strong>恢复工作</strong><br>捕获原生 resume metadata，重新打开已经结束的 session。</td>
+    <td width="25%"><strong>数据留在本机</strong><br>Sessions、logs、tokens 和配置默认都只存在本地。</td>
+  </tr>
+</table>
 
 ## 快速开始
 
-启动 Dashboard：
+### 本地运行
+
+需要 macOS 或 Linux、`tmux`、Python 3.10+，以及至少一个支持的 agent CLI
+（`codex`、`claude` 或 `agent`）。`ttyd` 是可选依赖，用于提供完整的浏览器
+交互终端。
 
 ```bash
+git clone https://github.com/YAMY1234/agent-orchestrator-public.git
+cd agent-orchestrator-public
+
+PYTHON=python3.11  # 可替换为任意已安装的 Python 3.10+
+"$PYTHON" -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python orchestrator.py dashboard
 ```
 
-默认只监听 `127.0.0.1`，因此这条命令只能在本机访问。如果已经有缓存 token，
-会继续使用；否则本机模式不需要鉴权。
+打开 [http://127.0.0.1:7860](http://127.0.0.1:7860)，创建 session、选择
+agent，然后使用 **Start in Background**。Dashboard 可以直接操作后台 tmux
+session，不需要再弹出一个终端窗口。
 
-打开：
-
-```text
-http://127.0.0.1:7860
-```
-
-如果需要局域网、VPN 或 tunnel 访问，建议加 token：
+如果希望当前 shell 里的命令更短：
 
 ```bash
-ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 0.0.0.0 --https
+ORCH_REPO="$PWD"
+orch() { "$ORCH_REPO/.venv/bin/python" "$ORCH_REPO/orchestrator.py" "$@"; }
 ```
 
-进入 Dashboard 后，用左上角的新建 session 控件选择 agent 并启动。推荐默认选择
-**Start in Background**。只有明确需要本地 terminal 窗口时，再选择
-**Open Terminal and Start**。
+### 在 macOS 后台常驻
 
-### 本地 Dashboard 配置
+受管安装器会创建 launchd 可安全访问的 live 副本、构建独立 venv、安装依赖、
+生成私有 token，并注册用户级 LaunchAgent：
 
-把 `dashboard.local.example.json` 复制成 `dashboard.local.json`，即可配置
-当前机器专用的快捷链接和路径，而不会把它们提交到 Git。这个本地文件已被忽略，
-支持 `notes_url`、`projects_browser_url`、`git_status_url` 和 `projects_root`。
+```bash
+./launchd/deploy.sh --install
+```
 
-环境变量 `ORCH_NOTES_URL`、`ORCH_PROJECTS_BROWSER_URL`、
-`ORCH_GIT_STATUS_URL` 和 `ORCH_PROJECTS_ROOT` 会覆盖对应的文件配置；设置
-`ORCH_DASHBOARD_CONFIG` 可以从其他位置加载 JSON 配置。
+后续更新代码只需要：
 
-### 本地运行目录
+```bash
+./launchd/deploy.sh
+```
 
-运行数据默认写入源码目录旁的 `outputs/`。如果希望把 session metadata 和
-日志放到别处，可以把 `ORCH_OUTPUTS_DIR` 设为绝对路径。Dashboard、session
-launcher、continue/link 命令和 YAML runner 都会使用同一个配置。对于
-Dashboard 进程，显式传入的 `orch dashboard --outputs PATH` 优先级更高。
+LaunchAgent 默认只监听 `127.0.0.1`。具体配置见
+[macOS 受管安装](#macos-受管安装)。
 
-`orch organize` 默认把归档后的 session 内容写入 output 目录旁的
-`projects/`。如果需要单独指定归档位置，可以设置 `ORCH_PROJECTS_DIR`。
+## 多 pane 也清晰，小窗口也可用
 
-## Dashboard 工作流
+Dashboard 支持 `1`、`2`、`3`、`2x2`、`3x2`、`3x3`、`4x2`、`4x3` 和
+`5x3` 布局。可以把 sidebar 中的 session 拖进任意 pane，也可以用组合键快速
+填充多个 pane。
 
-### 创建 Session
+空间受限时，session 名称保留左侧三分之一，关键操作在右侧三分之二区域
+右对齐。长名称自动省略，同时保留放大、重连、files、stop 和关闭按钮。
 
-你可以在浏览器里创建 Cursor、Claude 或 Codex session。每个 session 都会对应
-一个 tmux session、一个 output 目录和一个持续刷新的日志文件。
+<p align="center">
+  <img src="docs/assets/dashboard-compact.png" width="748" alt="小窗口中的 Agent Orchestrator pane，session 名称清晰且操作按钮右对齐">
+</p>
 
-通常更推荐后台启动，因为这样不会在本地创建一堆 terminal 窗口。即使后台启动，
-Dashboard 仍然可以和 tmux session 交互。
+每个 pane 都支持：
 
-### 排列 Pane
+- 实时纯文本输出，或可选的同源 ttyd 完整终端。
+- 独立输入框：Enter 发送，Shift+Enter 换行。
+- Session 优先级、终端主题、关联文件、放大和重连。
+- 尽可能优雅地停止 agent，并捕获 resume metadata。
+- 针对窄窗口和高密度多 pane 布局的响应式控制栏。
 
-可以用顶部布局选择器在不同 grid 之间切换。把左侧 sidebar 中的 session 拖到
-目标 pane，就能直接替换或放入对应窗口。
+## 工作原理
+
+```mermaid
+flowchart LR
+    Browser[浏览器 Dashboard] <--> API[FastAPI 控制平面]
+    API <--> Tmux[tmux sessions]
+    Tmux --> Codex[OpenAI Codex CLI]
+    Tmux --> Claude[Claude Code]
+    Tmux --> Cursor[Cursor Agent CLI]
+    API <--> Data[(本地 outputs 与 metadata)]
+```
+
+- `dashboard.py`：API、session 发现、tmux 集成、认证、resume 恢复和 ttyd
+  代理。
+- `static/index.html`：无前端依赖的单文件浏览器 UI。
+- `run.sh`：Dashboard 创建 session 时使用的轻量启动器。
+- `outputs/`：本地运行日志、metadata 和 Dashboard 状态。
+- tmux：让 agent 独立于浏览器持续运行。
+
+## 核心工作流
+
+### 创建和排列 sessions
+
+在浏览器里创建 Codex、Claude Code 或 Cursor session。推荐默认使用后台模式。
+运行期间可以随时切换布局和移动 session，不会重启 agent。
 
 ### 发送输入
 
-每个 pane 都有独立输入框。Enter 发送，Shift+Enter 换行。Dashboard 会通过
-tmux 把文本发送给底层 agent。
+每个 pane 都有独立输入框。Dashboard 通过 tmux 向底层 agent 发送文字和按键，
+因此你可以在同一个页面里连续解除多个任务的阻塞。
 
 ### Stop 和 Resume
 
-Stop 会尝试干净地停止 agent，并保存可恢复信息。是否能恢复取决于具体 CLI：
+Stop 会尽可能干净地结束 agent，并记录对应 CLI 暴露的原生恢复命令：
 
-- Codex: `codex resume <session-id>`
-- Claude Code: `claude --resume <session-id>`
-- Cursor Agent: `agent --resume <chat-id>`
+- Codex：`codex resume <session-id>`
+- Claude Code：`claude --resume <session-id>`
+- Cursor Agent：`agent --resume <chat-id>`
 
-如果成功找到 resume 命令，新建 session 时就可以从 Resume UI 里选择之前结束的
-session。
+存在可用 metadata 的已结束 session 会出现在 resume 选择器中。
 
-## CLI 单 Session 模式
-
-也可以从 terminal 直接启动一个 session：
+### 从 CLI 启动
 
 ```bash
-# 默认 Cursor Agent
-orch run
-
-# Claude Code
-orch run claude
-
-# OpenAI Codex CLI
-orch run codex
-
-# 自定义 label 和工作目录
-orch run cursor fix-bug /path/to/project
-orch run claude review-pr /path/to/project
-orch run codex investigate-bug /path/to/project
+orch run                              # Cursor Agent
+orch run claude                       # Claude Code
+orch run codex                        # OpenAI Codex CLI
+orch run codex investigate /path/to/project
 ```
 
-常用快捷参数包括 `--model`、`--effort`（仅 Claude Code）、`--fast`、
-`--think`、`--opus`、`--sonnet`、`--codex`、`--codex-high`。
+还支持 `--model`、`--effort`（仅 Claude Code）、`--fast`、`--think`、
+`--opus`、`--sonnet`、`--codex` 和 `--codex-high` 等快捷参数。
 
 ## 远程访问
 
-只要 Dashboard 监听地址超出 localhost，就必须启用 token。如果没有配置
-token，CLI 会拒绝使用非 loopback 的 `--host`。
+只要 Dashboard 监听非 localhost 地址，就必须启用认证。没有配置 token 时，CLI
+会拒绝非 loopback 的 `--host`。
 
 ```bash
 # 局域网或 Tailscale
@@ -169,59 +169,62 @@ ORCH_DASHBOARD_TOKEN=mysecret orch dashboard --host 127.0.0.1
 ngrok http 7860
 ```
 
-浏览器在非 localhost 来源下使用剪贴板 API 时需要 secure context。局域网或 VPN
-建议用 `--https`，公网 tunnel 通常会自带 HTTPS。
+非 localhost 的浏览器访问应使用 `--https` 或带 HTTPS 的 tunnel，确保剪贴板等
+安全上下文功能正常。
 
-## URL Helper
-
-```bash
-orch url            # 自动探测 HTTP/HTTPS，打印并复制最佳 URL
-orch url -q         # 只打印 URL
-orch url --json     # 打印所有候选网络接口
-orch url --no-copy  # 不复制到剪贴板
-```
-
-该命令会先读取 `ORCH_DASHBOARD_TOKEN`，然后读取
-`~/.config/agent-orchestrator/dashboard-token` 中的本地 token。没有 token 时只会
-返回 localhost URL。可以用 `ORCH_DASHBOARD_TOKEN_FILE` 指定其他缓存路径。只有在
-Dashboard 当前未运行、需要覆盖 fallback 协议时，才需要使用 `--https` 或
-`--no-https`。
-
-如果启动 Dashboard 时使用 `--publish-icloud`，当前 URL 也会写到：
-
-```text
-~/iCloud Drive/orch-dashboard.txt
-```
-
-## macOS LaunchAgent
-
-`launchd/` 里的脚本可以把 Dashboard 安装成用户级 LaunchAgent：
+### URL Helper
 
 ```bash
-./launchd/deploy.sh --install
-./launchd/deploy.sh
-./launchd/deploy.sh --dry-run
+orch url            # 检测正在运行的协议，打印并复制最佳 URL
+orch url -q         # 只输出 URL
+orch url --json     # 显示所有可访问候选地址
+orch url --no-copy  # 不写入剪贴板
 ```
 
-首次安装会在 live 目录中创建独立 `.venv` 并安装所需 Python 包。如果
-`python3` 低于 3.10，脚本还会查找 `python3.10` 到 `python3.14`；也可以用
-`ORCH_PYTHON` 明确指定解释器。
+Helper 会读取正在运行的 Dashboard bind metadata；本地服务始终优先返回
+loopback 地址。Token 来自环境变量或仅用户可读的本地缓存，启动日志和访问日志
+不会打印 token。
 
-首次安装会自动生成高强度随机 token，并以仅当前用户可读的权限保存到本地
-token 缓存。如果希望使用指定 token，可以在安装时设置
-`ORCH_DASHBOARD_TOKEN`。
+## macOS 受管安装
 
-LaunchAgent 默认只监听 `127.0.0.1`。如果明确需要 LAN 或 VPN 访问，请使用
-`ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install`；token 认证仍然是
-强制要求。
+```bash
+./launchd/deploy.sh --install  # 首次安装或重建
+./launchd/deploy.sh            # 同步代码并重启
+./launchd/deploy.sh --dry-run  # 预览同步内容
+```
 
-`deploy.sh` 会把仓库同步到一个更适合 launchd 读取的 live 目录，例如
-`~/projects/agent-orchestrator/`。这么做是为了避开 macOS TCC 对 LaunchAgent
-后台进程读取 `~/Documents`、`~/Desktop`、`~/Downloads` 的限制。
+安装器会：
+
+1. 把受跟踪的应用文件同步到 `~/projects/agent-orchestrator/`，避开 macOS
+   后台进程对 Documents、Desktop 和 Downloads 的隐私访问限制。
+2. 创建并维护独立的 live `.venv`。
+3. 在部署时保留 runtime outputs、projects、证书、本地配置和私有 task recipes。
+4. 以仅当前用户可读的权限保存 token 和 LaunchAgent plist。
+
+常用覆盖项：
+
+```bash
+ORCH_PYTHON=/path/to/python3.12 ./launchd/deploy.sh --install
+ORCH_DASHBOARD_PORT=9000 ./launchd/deploy.sh --install
+ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install
+```
+
+远程 bind 仍然必须使用 token 认证。
+
+## 本地配置和数据
+
+将 `dashboard.local.example.json` 复制为 `dashboard.local.json`，即可添加
+机器相关的快捷入口。该文件会被 Git 忽略。可配置项包括 `notes_url`、
+`projects_browser_url`、`git_status_url` 和 `projects_root`；对应的 `ORCH_*`
+环境变量具有更高优先级。
+
+运行数据默认保存在 `outputs/`。使用 `ORCH_OUTPUTS_DIR` 可以修改位置，
+`ORCH_PROJECTS_DIR` 可以修改归档位置。这些目录可能包含 prompts、transcripts、
+本地路径和 resume metadata，绝不能直接发布。
 
 ## 高级功能：YAML Recipe Runner
 
-仓库里仍然保留旧的 YAML 编排模式：
+旧版的依赖感知 YAML runner 仍然保留：
 
 ```bash
 orch start tasks/example.yaml
@@ -229,41 +232,27 @@ orch resume outputs/example-20260515-120000
 orch status
 ```
 
-这个模式可以跑多任务 recipe 和依赖关系，但最近的主要开发不在这条路径上。新使用
-场景建议优先使用 Dashboard 管理后台 session。
+对于新用户，推荐使用 Dashboard 管理的后台 sessions。包含本地路径或私有 prompt
+的 recipes 应保存在已忽略的 `tasks/private/` 目录。
 
-`tasks/example.yaml` 保持与机器无关。包含本机路径、内部 prompt 或日志引用的
-recipe 应放在 Git 已忽略的 `tasks/private/` 目录中，不要提交。
+## 安全
 
-## 架构
+Agent Orchestrator 能向本地 tmux sessions 发送输入，应当把它视为一个高权限的
+开发者工具。
 
-- `dashboard.py`：FastAPI 后端、tmux 集成、session 发现、resume metadata 恢复、
-  ttyd proxy。
-- `static/index.html`：单文件浏览器 UI。
-- `run.sh`：Dashboard 创建 session 时使用的轻量启动脚本。
-- `outputs/`：运行日志、session metadata 和 Dashboard 状态。
-- `tmux`：进程管理和 terminal capture 层。
+- 默认只监听 localhost。
+- 非 loopback bind 强制要求认证。
+- Token 保存在 tracked tree 之外，并使用仅当前用户可读的权限。
+- 绝不要发布 `outputs/`、`projects/`、`.dashboard-certs/`、本地配置或私有
+  task recipes。
 
-## 安全说明
+漏洞报告和部署建议见 [SECURITY.md](SECURITY.md)。
 
-- 如果 Dashboard 可以被远程访问，它就可以向本地 tmux session 发送输入。
-- 非 loopback 监听必须设置 `--token` 或 `ORCH_DASHBOARD_TOKEN`。
-- 运行目录里可能包含 transcript、prompt、日志和本机路径。不要公开 `outputs/`、
-  `projects/`、`.dashboard-certs/`。
+## 项目状态
 
-漏洞报告和部署安全说明见 [SECURITY.md](SECURITY.md)。
+Dashboard-first 是主要支持的工作流。Resume 能力取决于各 agent CLI 暴露的
+metadata，终端渲染也可能因 CLI 而异。项目当前面向可信的本地开发者机器，而
+不是托管式多用户环境。
 
-## 贡献
-
-开发环境、检查命令和 Pull Request 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## License
-
-Agent Orchestrator 使用 [MIT License](LICENSE)。
-
-## 已知限制
-
-- Resume 是 best-effort，依赖具体 agent CLI 暴露的本地 metadata。
-- ttyd 渲染仍可能受到不同 agent CLI terminal UI 行为影响。
-- YAML 编排是 legacy 路径，成熟度低于当前 Dashboard 工作流。
-- 当前项目主要面向本地开发机，不是托管式多用户服务。
+欢迎贡献，开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。Agent Orchestrator
+采用 [MIT License](LICENSE)。
