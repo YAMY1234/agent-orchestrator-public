@@ -1,0 +1,30 @@
+__pycache__/
+outputs/
+*.pyc
+.DS_Store
+
+# Dashboard-generated runtime files.
+# .dashboard-certs/ holds the self-signed TLS cert AND the private key —
+# never commit. projects/ is where `orch organize` archives finished
+# sessions + transcripts (personal data; regenerated locally).
+# _orchestrator.url caches the current dashboard URL including the token.
+.dashboard-certs/
+projects/
+_orchestrator.url
+
+# LaunchAgent instance file (templated at install time — we keep only the
+# .template in git). _token is the legacy repo-local token cache.
+launchd/com.user.orch-dashboard.plist
+launchd/_token
+
+# Optional local dashboard shortcuts and paths. Keep only the example in Git.
+dashboard.local.json
+
+# Machine-specific task recipes may contain local paths, prompts, and logs.
+tasks/local-test.yaml
+tasks/fix-hang-issue.yaml
+tasks/private/
+
+# Internal development retrospectives can contain session and commit context.
+docs/dashboard-session-summary.md
+docs/internal/

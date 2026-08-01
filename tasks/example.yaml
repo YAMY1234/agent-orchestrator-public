@@ -1,0 +1,30 @@
+project: example-project
+max_concurrent_agents: 2
+
+defaults:
+  agent: codex
+  idle_timeout: 20
+  monitor_mode: fixed
+  monitor_interval: 1
+  mode: manual             # Default manual mode; change state.json to auto when ready.
+
+tasks:
+  - name: inspect-codebase
+    cwd: .
+    initial_prompt: |
+      Inspect this repository and identify one small, well-scoped improvement.
+      Explain the relevant code and propose a concrete implementation plan.
+    max_rounds: 10
+
+  - name: update-documentation
+    cwd: .
+    initial_prompt: |
+      Use the inspection results to improve the project documentation.
+      Keep the change focused and verify that the documented commands are valid.
+    max_rounds: 8
+    depends_on: [inspect-codebase]
+    steps:
+      - prompt: "Update the relevant README section."
+        max_rounds: 3
+      - prompt: "Review the diff for accuracy and clarity."
+        max_rounds: 5

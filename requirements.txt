@@ -1,0 +1,8 @@
+pyyaml>=6.0
+
+# Dashboard (orch dashboard)
+fastapi>=0.110
+uvicorn>=0.27
+# ttyd reverse proxy so the iframe stays same-origin with the dashboard
+httpx>=0.27
+websockets>=12.0

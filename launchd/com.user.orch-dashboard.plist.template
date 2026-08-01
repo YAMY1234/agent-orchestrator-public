@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.orch-dashboard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__PROJECT_DIR__/orchestrator.py</string>
+    <string>dashboard</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
+    <string>--port</string>
+    <string>__PORT__</string>
+    <string>--ttyd</string>
+    <string>--https</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>ORCH_DASHBOARD_TOKEN_FILE</key>
+    <string>__TOKEN_FILE__</string>
+    <key>ORCH_OUTPUTS_DIR</key>
+    <string>__OUTPUTS_DIR__</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Throttle restarts so a crash-loop doesn't burn CPU. -->
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>__OUTPUTS_DIR__/_dashboard.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__OUTPUTS_DIR__/_dashboard.err.log</string>
+</dict>
+</plist>
