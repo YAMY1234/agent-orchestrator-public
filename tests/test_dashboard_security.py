@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from agent_orchestrator import cli, dashboard, local_settings
+from agent_orchestrator import terminal_theme
 from launchd.render_plist import render_plist
 
 
@@ -92,6 +93,32 @@ class LocalSettingsTests(unittest.TestCase):
             )
             self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
 
+
+class TerminalThemeTests(unittest.TestCase):
+    def test_theme_names_are_normalized(self):
+        self.assertEqual(
+            terminal_theme.normalize_terminal_theme("Soft Green"),
+            "soft-green",
+        )
+        self.assertEqual(
+            terminal_theme.normalize_terminal_theme("white"),
+            "light",
+        )
+        self.assertEqual(terminal_theme.normalize_terminal_theme("dark"), "")
+        self.assertEqual(terminal_theme.normalize_terminal_theme("unknown"), "")
+
+    def test_ttyd_theme_patch_changes_only_known_theme_literal(self):
+        original = terminal_theme._TTYD_DARK_THEME_JS.encode()
+        patched = terminal_theme.patch_ttyd_index_theme(
+            b"before " + original + b" after",
+            "soft-dark",
+        )
+        self.assertNotEqual(patched, b"before " + original + b" after")
+        self.assertIn(b'background:"#1f242c"', patched)
+        self.assertEqual(
+            terminal_theme.patch_ttyd_index_theme(b"unchanged", "soft-dark"),
+            b"unchanged",
+        )
 
 class DashboardAuthenticationTests(unittest.TestCase):
     @classmethod
