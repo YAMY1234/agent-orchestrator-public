@@ -466,6 +466,7 @@
   .grid.cols-3x3 { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); }
   .grid.cols-4x2 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
   .grid.cols-4x3 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); }
+  .grid.cols-4x4 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, minmax(0, 1fr)); }
   .grid.cols-5x3 { grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); }
 
   .pane-card {
@@ -876,6 +877,7 @@
   .app.mobile .grid.cols-3x3,
   .app.mobile .grid.cols-4x2,
   .app.mobile .grid.cols-4x3,
+  .app.mobile .grid.cols-4x4,
   .app.mobile .grid.cols-5x3 {
     grid-template-columns: 1fr !important;
     grid-template-rows: none !important;
@@ -2295,6 +2297,7 @@
         <button data-layout="cols-3x3">3×3</button>
         <button data-layout="cols-4x2">4×2</button>
         <button data-layout="cols-4x3">4×3</button>
+        <button data-layout="cols-4x4">4×4</button>
         <button data-layout="cols-5x3">5×3</button>
       </div>
       <div class="panel-actions" aria-label="Panel actions">
@@ -3584,7 +3587,7 @@
   // ---------- Grid / panes ----------
   function applyLayoutChrome(name) {
     const g = $("grid");
-    g.classList.remove("cols-2", "cols-3", "cols-2x2", "cols-3x2", "cols-3x3", "cols-4x2", "cols-4x3", "cols-5x3");
+    g.classList.remove("cols-2", "cols-3", "cols-2x2", "cols-3x2", "cols-3x3", "cols-4x2", "cols-4x3", "cols-4x4", "cols-5x3");
     if (name !== "1") g.classList.add(name);
     $("layout-picker").querySelectorAll("button").forEach(b => {
       b.classList.toggle("toggle-on", b.dataset.layout === name);
@@ -3629,6 +3632,7 @@
       "cols-3x3": 9,
       "cols-4x2": 8,
       "cols-4x3": 12,
+      "cols-4x4": 16,
       "cols-5x3": 15,
     }[name] || 1;
   }
