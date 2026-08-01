@@ -41,22 +41,23 @@ path. Treat it as an advanced or legacy mode.
 - Python dependencies from `requirements.txt`
 - Optional: `ttyd` for full browser terminal interaction
 
-Install dependencies:
+Create an isolated environment and install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python3.11 -m venv .venv  # any Python 3.10+ is supported
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 Examples below assume `orch` points to `orchestrator.py` in this repository.
-If you do not have that alias or wrapper, run `python3 orchestrator.py ...`
-from the repo root.
+If you do not have that alias or wrapper, run
+`.venv/bin/python orchestrator.py ...` from the repo root.
 
 ## Quick Start
 
 Start the dashboard:
 
 ```bash
-orch dashboard
+.venv/bin/python orchestrator.py dashboard
 ```
 
 The default bind address is `127.0.0.1`, so this command is local-only. A
@@ -211,9 +212,19 @@ The `launchd/` scripts can install the dashboard as a user LaunchAgent:
 ./launchd/deploy.sh --dry-run
 ```
 
+The first install creates a separate `.venv` in the live directory and installs
+the required Python packages there. If `python3` is older than 3.10, the script
+also looks for `python3.10` through `python3.14`; set `ORCH_PYTHON` to select a
+different interpreter explicitly.
+
 The first install generates a strong random dashboard token and stores it in
 the local token cache with user-only permissions. Set
 `ORCH_DASHBOARD_TOKEN` during installation if you prefer an explicit token.
+
+The LaunchAgent listens on `127.0.0.1` by default. To opt into LAN or VPN
+access, install with
+`ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install`; token
+authentication remains mandatory.
 
 The deploy script syncs the repo to a launchd-friendly live directory such as
 `~/projects/agent-orchestrator/`. This avoids macOS TCC issues where background

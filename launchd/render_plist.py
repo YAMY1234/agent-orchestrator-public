@@ -17,6 +17,7 @@ PLACEHOLDERS = (
     "__TOKEN_FILE__",
     "__OUTPUTS_DIR__",
     "__HOME__",
+    "__HOST__",
     "__PORT__",
 )
 

@@ -7,7 +7,7 @@ import re
 import ssl
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -123,8 +123,8 @@ def build_access_url(ip: Optional[str], port: int, scheme: str,
     return base
 
 
-def detect_dashboard_scheme(port: int, timeout: float = 2.0) -> str:
-    """Detect HTTP or HTTPS from a live dashboard on the loopback port."""
+def detect_dashboard(port: int, timeout: float = 2.0) -> dict[str, Any]:
+    """Return browser-safe metadata from a live loopback dashboard."""
     for scheme in ("http", "https"):
         url = f"{scheme}://127.0.0.1:{port}/api/health"
         context = ssl._create_unverified_context() if scheme == "https" else None
@@ -134,9 +134,14 @@ def detect_dashboard_scheme(port: int, timeout: float = 2.0) -> str:
                 if response.status != 200:
                     continue
                 payload = json.loads(response.read(4096))
-                if payload.get("ok") is True:
-                    return scheme
+                if isinstance(payload, dict) and payload.get("ok") is True:
+                    return {**payload, "scheme": scheme}
         except (HTTPError, URLError, OSError, TimeoutError,
                 json.JSONDecodeError):
             continue
-    return ""
+    return {}
+
+
+def detect_dashboard_scheme(port: int, timeout: float = 2.0) -> str:
+    """Detect HTTP or HTTPS from a live dashboard on the loopback port."""
+    return str(detect_dashboard(port, timeout).get("scheme") or "")

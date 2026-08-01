@@ -18,11 +18,15 @@ import notifier
 from config import ProjectConfig, load_config
 from dashboard_network import (
     build_access_url,
-    detect_dashboard_scheme,
+    detect_dashboard,
     list_local_ipv4,
     pick_best_ip,
 )
-from local_settings import dashboard_token, require_dashboard_auth
+from local_settings import (
+    dashboard_token,
+    is_loopback_host,
+    require_dashboard_auth,
+)
 from state import StateManager
 from task_runner import TaskRunner
 
@@ -828,21 +832,27 @@ def cmd_url(args):
     hops between WiFi / VPN and you want to grab the working URL fast."""
     token = args.token or dashboard_token()
     port = args.port
-    detected_scheme = ""
+    live = detect_dashboard(port)
+    detected_scheme = str(live.get("scheme") or "")
     if args.https is None:
-        detected_scheme = detect_dashboard_scheme(port)
         scheme = detected_scheme or ("https" if token else "http")
     else:
         scheme = "https" if args.https else "http"
 
-    bind_host = "0.0.0.0" if token else "127.0.0.1"
-    best = pick_best_ip(bind_host)
+    bind_host = str(live.get("bind_host") or "").strip()
+    if not bind_host:
+        bind_host = "0.0.0.0" if token and not live else "127.0.0.1"
+
+    if is_loopback_host(bind_host) or not token:
+        interfaces = [("loopback", "127.0.0.1")]
+        best = "127.0.0.1"
+    elif bind_host not in ("0.0.0.0", "::", ""):
+        interfaces = [("configured", bind_host)]
+        best = bind_host
+    else:
+        interfaces = list_local_ipv4() or [("loopback", "127.0.0.1")]
+        best = pick_best_ip(bind_host) or "127.0.0.1"
     best_url = build_access_url(best, port, scheme, token) if best else ""
-    interfaces = (
-        list_local_ipv4()
-        if token
-        else [("loopback", "127.0.0.1")]
-    )
 
     if args.json:
         payload = {
@@ -851,6 +861,7 @@ def cmd_url(args):
             "port": port,
             "scheme": scheme,
             "scheme_detected": bool(detected_scheme),
+            "bind_host": bind_host,
             "candidates": [
                 {"iface": iface, "ip": ip,
                  "url": build_access_url(ip, port, scheme, token)}
@@ -938,14 +949,14 @@ def cmd_dashboard(args):
         print(f"          key ={key_path}")
         print("          (self-signed — accept the browser warning once)")
     if args.token:
-        print(f"Token:    {args.token}  (append ?token=... or send Authorization: Bearer ...)")
+        print("Token:    configured (hidden; run 'orch url' for browser access)")
     else:
         print("Token:    (none — open access; pass --token or set $ORCH_DASHBOARD_TOKEN to lock)")
     if args.ttyd:
         print("ttyd:     enabled; browsers connect via the dashboard's same-origin proxy")
     best = dash_mod.pick_best_ip(args.host)
     if best:
-        print(f"Phone:    {dash_mod.build_access_url(best, args.port, scheme, args.token)}")
+        print(f"Phone:    {dash_mod.build_access_url(best, args.port, scheme, None)}")
     if publish_icloud and getattr(app.state, "icloud_file", None):
         print(f"iCloud:   {app.state.icloud_file}")
     print()
@@ -976,7 +987,7 @@ def cmd_dashboard(args):
 
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info",
-                    **ssl_kwargs)
+                    access_log=False, **ssl_kwargs)
     finally:
         _cleanup()
 

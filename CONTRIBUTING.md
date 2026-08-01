@@ -19,7 +19,7 @@ prompts in an issue or pull request.
 Run the same lightweight checks used in continuous integration:
 
 ```bash
-python -m unittest discover -s tests -v
+python -W error -m unittest discover -s tests -v
 python -m py_compile *.py launchd/*.py
 bash -n ./*.sh launchd/*.sh
 ```

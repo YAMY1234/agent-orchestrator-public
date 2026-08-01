@@ -10,7 +10,9 @@
 #   ORCH_DASHBOARD_TOKEN=...      # optional; generated securely when absent
 #   ORCH_DASHBOARD_TOKEN_FILE=... # default: ~/.config/agent-orchestrator/dashboard-token
 #   ORCH_OUTPUTS_DIR=...          # default: <project>/outputs
-#   PORT=...                      # default: 7860
+#   ORCH_PYTHON=...               # Python 3.10+ override when no project venv
+#   ORCH_DASHBOARD_HOST=...       # default: 127.0.0.1
+#   ORCH_DASHBOARD_PORT=...       # default: 7860 (PORT remains compatible)
 #
 # After install:
 #   launchctl list | grep orch-dashboard
@@ -30,7 +32,8 @@ TOKEN="${ORCH_DASHBOARD_TOKEN:-}"
 TOKEN_FILE="${ORCH_DASHBOARD_TOKEN_FILE:-$HOME/.config/agent-orchestrator/dashboard-token}"
 LEGACY_TOKEN_FILE="$PROJECT_DIR/launchd/_token"
 OUTPUTS_DIR="${ORCH_OUTPUTS_DIR:-$PROJECT_DIR/outputs}"
-PORT="${PORT:-7860}"
+DASHBOARD_HOST="${ORCH_DASHBOARD_HOST:-127.0.0.1}"
+DASHBOARD_PORT="${ORCH_DASHBOARD_PORT:-${PORT:-7860}}"
 
 FAST=0
 if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then
@@ -47,28 +50,38 @@ if [[ $FAST -eq 1 ]]; then
   launchctl kickstart -k "gui/$(id -u)/$LABEL"
   # Uvicorn needs ~2-3s to bind. Poll up to 8s before giving up.
   for i in 1 2 3 4 5 6 7 8; do
-    if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
-      echo "✓ restarted; listening on $PORT"
+    if lsof -iTCP:"$DASHBOARD_PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+      echo "✓ restarted; listening on $DASHBOARD_PORT"
       exit 0
     fi
     sleep 1
   done
-  echo "⚠ service restarted but nothing is listening on $PORT after 8s — check logs:"
+  echo "⚠ service restarted but nothing is listening on $DASHBOARD_PORT after 8s — check logs:"
   echo "    tail -20 $OUTPUTS_DIR/_dashboard.err.log"
   exit 1
 fi
 
 # ----- Full install path -----
 
-# Resolve Python: prefer project venv, else system python3.
-PYTHON_BIN=""
+# Resolve Python: prefer the live project venv, then an explicit override.
+PYTHON_BIN="${ORCH_PYTHON:-}"
 if [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
-else
+elif [[ -z "$PYTHON_BIN" ]]; then
   PYTHON_BIN="$(command -v python3 || true)"
 fi
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo "error: no python3 on PATH and no .venv found in $PROJECT_DIR" >&2
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+  echo "error: no usable Python found; run launchd/deploy.sh --install" >&2
+  exit 1
+fi
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+  echo "error: Python 3.10+ is required; got $("$PYTHON_BIN" --version 2>&1)" >&2
+  echo "set ORCH_PYTHON or run launchd/deploy.sh --install" >&2
+  exit 1
+fi
+if ! "$PYTHON_BIN" -c 'import fastapi, httpx, uvicorn, websockets, yaml'; then
+  echo "error: dashboard dependencies are missing from $PYTHON_BIN" >&2
+  echo "run launchd/deploy.sh --install to create the managed runtime" >&2
   exit 1
 fi
 
@@ -79,7 +92,7 @@ if [[ -z "$TOKEN" && -f "$LEGACY_TOKEN_FILE" ]]; then
   IFS= read -r TOKEN < "$LEGACY_TOKEN_FILE" || true
 fi
 if [[ -z "$TOKEN" ]]; then
-  TOKEN="$($PYTHON_BIN -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  TOKEN="$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(32))')"
 fi
 
 mkdir -p "$(dirname "$TOKEN_FILE")"
@@ -96,7 +109,7 @@ mkdir -p "$OUTPUTS_DIR"
 
 "$PYTHON_BIN" "$PROJECT_DIR/launchd/render_plist.py" \
   "$TEMPLATE" "$PLIST_DEST" "$PYTHON_BIN" "$PROJECT_DIR" "$PATH_VAL" \
-  "$TOKEN_FILE" "$OUTPUTS_DIR" "$HOME" "$PORT"
+  "$TOKEN_FILE" "$OUTPUTS_DIR" "$HOME" "$DASHBOARD_HOST" "$DASHBOARD_PORT"
 
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   launchctl bootout "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || true
@@ -112,24 +125,24 @@ echo
 echo "Installed: $PLIST_DEST"
 echo "Label:     $LABEL"
 echo "Token:     saved to $TOKEN_FILE"
-echo "Port:      $PORT"
+echo "Port:      $DASHBOARD_PORT"
 echo "Outputs:   $OUTPUTS_DIR"
 echo "Logs:      $OUTPUTS_DIR/_dashboard.{out,err}.log"
 echo
 
 # Health check.
-if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
-  echo "✓ dashboard is listening on $PORT"
+if lsof -iTCP:"$DASHBOARD_PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+  echo "✓ dashboard is listening on $DASHBOARD_PORT"
   # Show the right URL scheme based on what flags the plist uses.
   if grep -q '<string>--https</string>' "$PLIST_DEST" 2>/dev/null; then
-    echo "  Open: https://127.0.0.1:$PORT/"
+    echo "  Open: https://127.0.0.1:$DASHBOARD_PORT/"
     echo "        (self-signed cert → accept the warning once per browser)"
   else
-    echo "  Open: http://127.0.0.1:$PORT/"
+    echo "  Open: http://127.0.0.1:$DASHBOARD_PORT/"
   fi
   echo "  Run 'orch url' to copy an authenticated URL."
 else
-  echo "⚠ nothing listening on $PORT yet. Recent errors:"
+  echo "⚠ nothing listening on $DASHBOARD_PORT yet. Recent errors:"
   tail -5 "$OUTPUTS_DIR/_dashboard.err.log" 2>/dev/null | sed 's/^/    /'
   echo
   # Detect the classic TCC ("Operation not permitted") trap.

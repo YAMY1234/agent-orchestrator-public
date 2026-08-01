@@ -40,21 +40,22 @@ session 里运行，持续捕获输出，并通过浏览器界面进行多窗口
 - `requirements.txt` 里的 Python 依赖
 - 可选：`ttyd`，用于浏览器内完整终端交互
 
-安装 Python 依赖：
+创建隔离环境并安装 Python 依赖：
 
 ```bash
-pip install -r requirements.txt
+python3.11 -m venv .venv  # 任意 Python 3.10+ 均可
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 下面的例子默认你已经把 `orch` 指向本仓库的 `orchestrator.py`。如果没有这个
-alias 或 wrapper，也可以在仓库根目录运行 `python3 orchestrator.py ...`。
+alias 或 wrapper，也可以在仓库根目录运行 `.venv/bin/python orchestrator.py ...`。
 
 ## 快速开始
 
 启动 Dashboard：
 
 ```bash
-orch dashboard
+.venv/bin/python orchestrator.py dashboard
 ```
 
 默认只监听 `127.0.0.1`，因此这条命令只能在本机访问。如果已经有缓存 token，
@@ -202,9 +203,17 @@ Dashboard 当前未运行、需要覆盖 fallback 协议时，才需要使用 `-
 ./launchd/deploy.sh --dry-run
 ```
 
+首次安装会在 live 目录中创建独立 `.venv` 并安装所需 Python 包。如果
+`python3` 低于 3.10，脚本还会查找 `python3.10` 到 `python3.14`；也可以用
+`ORCH_PYTHON` 明确指定解释器。
+
 首次安装会自动生成高强度随机 token，并以仅当前用户可读的权限保存到本地
 token 缓存。如果希望使用指定 token，可以在安装时设置
 `ORCH_DASHBOARD_TOKEN`。
+
+LaunchAgent 默认只监听 `127.0.0.1`。如果明确需要 LAN 或 VPN 访问，请使用
+`ORCH_DASHBOARD_HOST=0.0.0.0 ./launchd/deploy.sh --install`；token 认证仍然是
+强制要求。
 
 `deploy.sh` 会把仓库同步到一个更适合 launchd 读取的 live 目录，例如
 `~/projects/agent-orchestrator/`。这么做是为了避开 macOS TCC 对 LaunchAgent

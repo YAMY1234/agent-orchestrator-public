@@ -12,7 +12,7 @@
     <string>__PROJECT_DIR__/orchestrator.py</string>
     <string>dashboard</string>
     <string>--host</string>
-    <string>0.0.0.0</string>
+    <string>__HOST__</string>
     <string>--port</string>
     <string>__PORT__</string>
     <string>--ttyd</string>

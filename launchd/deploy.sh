@@ -19,9 +19,11 @@
 #
 # Env:
 #   LIVE_DIR=~/projects/agent-orchestrator    (destination)
+#   ORCH_PYTHON=/path/to/python3.11           (optional bootstrap override)
 #   ORCH_DASHBOARD_TOKEN=...                  (optional on --install)
 #   ORCH_OUTPUTS_DIR=/absolute/runtime/path   (only used on --install)
-#   PORT=7860                                 (ditto)
+#   ORCH_DASHBOARD_HOST=127.0.0.1             (ditto)
+#   ORCH_DASHBOARD_PORT=7860                   (PORT also remains compatible)
 
 set -euo pipefail
 
@@ -56,6 +58,7 @@ fi
 # Exclude things that either (a) belong to the running/live instance and
 # should not be clobbered by the dev tree, or (b) are dev-only clutter.
 EXCLUDES=(
+  --filter='protect docs/'       # keep excluded machine-local docs without delete warnings
   --exclude='.git/'
   --exclude='.venv/'
   --exclude='__pycache__/'
@@ -84,6 +87,68 @@ if [[ $DRY -eq 1 ]]; then
   echo "(dry-run — no service action)"
   exit 0
 fi
+
+find_bootstrap_python() {
+  local candidate resolved
+  if [[ -n "${ORCH_PYTHON:-}" ]]; then
+    candidate="$ORCH_PYTHON"
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    if [[ -n "$resolved" ]] && "$resolved" -c \
+        'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+      echo "$resolved"
+      return 0
+    fi
+    return 1
+  fi
+
+  for candidate in python3 python3.14 python3.13 python3.12 python3.11 python3.10; do
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    if [[ -n "$resolved" ]] && "$resolved" -c \
+        'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+      echo "$resolved"
+      return 0
+    fi
+  done
+  return 1
+}
+
+VENV_PYTHON="$LIVE_DIR/.venv/bin/python"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  BOOTSTRAP_PYTHON="$(find_bootstrap_python || true)"
+  if [[ -z "$BOOTSTRAP_PYTHON" ]]; then
+    echo "error: Python 3.10+ is required to create the dashboard runtime" >&2
+    echo "install a current Python or set ORCH_PYTHON=/path/to/python3" >&2
+    exit 1
+  fi
+  echo "creating dashboard runtime with $BOOTSTRAP_PYTHON ..."
+  "$BOOTSTRAP_PYTHON" -m venv "$LIVE_DIR/.venv"
+fi
+if ! "$VENV_PYTHON" -c \
+    'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+  echo "error: $LIVE_DIR/.venv uses Python older than 3.10" >&2
+  echo "move that venv to Trash and rerun this command" >&2
+  exit 1
+fi
+
+REQUIREMENTS_FILE="$LIVE_DIR/requirements.txt"
+REQUIREMENTS_STAMP="$LIVE_DIR/.venv/.orch-requirements.sha256"
+REQUIREMENTS_HASH="$("$VENV_PYTHON" -c \
+  'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+  "$REQUIREMENTS_FILE")"
+INSTALLED_HASH=""
+if [[ -f "$REQUIREMENTS_STAMP" ]]; then
+  IFS= read -r INSTALLED_HASH < "$REQUIREMENTS_STAMP" || true
+fi
+
+if [[ "$INSTALLED_HASH" != "$REQUIREMENTS_HASH" ]] || \
+    ! "$VENV_PYTHON" -c 'import fastapi, httpx, uvicorn, websockets, yaml' \
+      >/dev/null 2>&1; then
+  echo "installing dashboard dependencies ..."
+  "$VENV_PYTHON" -m pip install --disable-pip-version-check \
+    -r "$REQUIREMENTS_FILE"
+  printf '%s\n' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
+fi
+"$VENV_PYTHON" -m pip check
 
 # Re-create outputs/ just in case (LaunchAgent needs to write logs there).
 mkdir -p "$LIVE_DIR/outputs"

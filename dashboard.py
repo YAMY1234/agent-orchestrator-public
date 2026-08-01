@@ -5843,6 +5843,9 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "ok": True,
             "auth": bool(token),
             "ttyd": ttyd.available(),
+            "bind_host": bind_host,
+            "port": port,
+            "scheme": scheme,
             "active_snapshot_autosave": {
                 "enabled": bool(app.state.active_snapshot_autosave_enabled),
                 "interval_seconds": app.state.active_snapshot_autosave_interval,
@@ -5948,7 +5951,11 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             raise HTTPException(404, "tmux session not alive")
         return await _proxy_http(session, "", request)
 
-    @app.api_route("/tty/{session}/{subpath:path}", methods=["GET", "POST", "HEAD"])
+    @app.api_route(
+        "/tty/{session}/{subpath:path}",
+        methods=["GET", "POST", "HEAD"],
+        include_in_schema=False,
+    )
     async def tty_asset(session: str, subpath: str, request: Request):
         # Don't let HTTP catch WS upgrade paths.
         if subpath == "ws":
@@ -7677,21 +7684,21 @@ def main():
         print(f"          key ={key_path}")
         print("          (self-signed — accept the browser warning once)")
     if args.token:
-        print(f"Token:    {args.token}  (use ?token= in URL or Authorization: Bearer …)")
+        print("Token:    configured (hidden; use the URL helper for browser access)")
     else:
         print("Token:    (none — open access; pass --token or $ORCH_DASHBOARD_TOKEN to lock)")
     if args.ttyd:
         print(f"ttyd:     enabled; browsers will connect via the dashboard's same-origin proxy")
     best = pick_best_ip(args.host)
     if best:
-        print(f"Phone:    {build_access_url(best, args.port, scheme, args.token)}")
+        print(f"Phone:    {build_access_url(best, args.port, scheme, None)}")
     if args.publish_icloud and getattr(app.state, "icloud_file", None):
         print(f"iCloud:   {app.state.icloud_file}")
     print()
 
     try:
         uvicorn.run(app, host=args.host, port=args.port, reload=args.reload,
-                    log_level="info", **ssl_kwargs)
+                    log_level="info", access_log=False, **ssl_kwargs)
     finally:
         app.state.ttyd.stop_all()
 

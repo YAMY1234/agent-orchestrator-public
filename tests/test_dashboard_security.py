@@ -68,6 +68,7 @@ class LocalSettingsTests(unittest.TestCase):
                 token_file,
                 f"{project_dir}/outputs",
                 "/Users/example",
+                "127.0.0.1",
                 "7860",
             ])
             data = plistlib.loads(destination.read_bytes())
@@ -78,6 +79,9 @@ class LocalSettingsTests(unittest.TestCase):
                 environment["ORCH_DASHBOARD_TOKEN_FILE"], token_file
             )
             self.assertNotIn("ORCH_DASHBOARD_TOKEN", environment)
+            self.assertEqual(
+                data["ProgramArguments"][4], "127.0.0.1"
+            )
             self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
 
 
@@ -103,6 +107,8 @@ class DashboardAuthenticationTests(unittest.TestCase):
             health = client.get("/api/health")
             self.assertEqual(health.status_code, 200)
             self.assertNotIn("outputs_dir", health.json())
+            self.assertEqual(health.json()["bind_host"], "127.0.0.1")
+            self.assertEqual(health.json()["scheme"], "http")
             self.assertEqual(client.get("/api/sessions").status_code, 401)
             self.assertEqual(client.get("/tty/missing").status_code, 401)
 
@@ -111,6 +117,11 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertEqual(root.cookies.get("orch_token"), "test-token")
             self.assertIn("HttpOnly", root.headers.get("set-cookie", ""))
             self.assertEqual(client.get("/api/sessions").status_code, 200)
+
+            schema = client.get("/openapi.json").json()
+            self.assertNotIn(
+                "/tty/{session}/{subpath}", schema.get("paths", {})
+            )
 
     def test_tty_websocket_rejects_missing_token(self):
         with TestClient(self.app) as client:
@@ -192,6 +203,9 @@ class DeploymentScriptTests(unittest.TestCase):
             "docs/internal/",
         ):
             self.assertIn(f"--exclude='{path}'", script)
+        self.assertIn("--filter='protect docs/'", script)
+        self.assertIn("$LIVE_DIR/.venv/bin/python", script)
+        self.assertIn("Python 3.10+ is required", script)
 
 
 if __name__ == "__main__":
