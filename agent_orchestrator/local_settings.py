@@ -8,11 +8,11 @@ import plistlib
 from pathlib import Path
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DASHBOARD_TOKEN_FILE = (
     Path.home() / ".config" / "agent-orchestrator" / "dashboard-token"
 )
-LEGACY_DASHBOARD_TOKEN_FILE = SCRIPT_DIR / "launchd" / "_token"
+LEGACY_DASHBOARD_TOKEN_FILE = PROJECT_DIR / "launchd" / "_token"
 INSTALLED_DASHBOARD_PLIST = (
     Path.home() / "Library" / "LaunchAgents" / "com.user.orch-dashboard.plist"
 )

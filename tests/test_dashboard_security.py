@@ -11,8 +11,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-import dashboard
-import local_settings
+from agent_orchestrator import cli, dashboard, local_settings
 from launchd.render_plist import render_plist
 
 
@@ -54,6 +53,15 @@ class LocalSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             local_settings.require_dashboard_auth("0.0.0.0", "")
         local_settings.require_dashboard_auth("0.0.0.0", "token")
+
+    def test_package_modules_resolve_repository_resources(self):
+        project_dir = Path(__file__).resolve().parents[1]
+        self.assertEqual(cli.PROJECT_DIR, project_dir)
+        self.assertEqual(cli.SCRIPTS_DIR, project_dir / "scripts")
+        self.assertEqual(dashboard.PROJECT_DIR, project_dir)
+        self.assertEqual(dashboard.STATIC_DIR, project_dir / "static")
+        self.assertEqual(dashboard.SCRIPTS_DIR, project_dir / "scripts")
+        self.assertEqual(local_settings.PROJECT_DIR, project_dir)
 
     def test_launchagent_renderer_escapes_values_and_hides_token(self):
         template = Path("launchd/com.user.orch-dashboard.plist.template")

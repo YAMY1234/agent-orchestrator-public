@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-import dashboard_network
-import orchestrator
+from agent_orchestrator import cli as orchestrator
+from agent_orchestrator import dashboard_network
 
 
 class _Response:

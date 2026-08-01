@@ -9,11 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from config import TaskConfig, load_skills
-from monitor import Monitor, tmux_send, tmux_session_alive
-from notifier import notify_task_done
-from prompt import build_initial_context
-from state import StateManager
+from .config import TaskConfig, load_skills
+from .monitor import Monitor, tmux_send, tmux_session_alive
+from .notifier import notify_task_done
+from .prompt import build_initial_context
+from .state import StateManager
 
 log = logging.getLogger(__name__)
 

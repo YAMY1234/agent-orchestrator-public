@@ -21,9 +21,13 @@ Run the same lightweight checks used in continuous integration:
 
 ```bash
 python -W error -m unittest discover -s tests -v
-python -m py_compile *.py scripts/*.py launchd/*.py
+python -m py_compile *.py agent_orchestrator/*.py scripts/*.py launchd/*.py
 bash -n scripts/*.sh launchd/*.sh
 ```
+
+Application modules live in `agent_orchestrator/`. The root-level
+`orchestrator.py` and `dashboard.py` files are compatibility entrypoints; add
+new Python implementation code to the package instead of the repository root.
 
 For dashboard changes, also start a local instance, create a background
 session, attach a terminal pane, send input, and stop the session cleanly.

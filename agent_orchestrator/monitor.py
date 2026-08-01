@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from prompt import COMPLETION_KEYWORDS, get_continuation_prompt
-from state import StateManager
+from .prompt import COMPLETION_KEYWORDS, get_continuation_prompt
+from .state import StateManager
 
 log = logging.getLogger(__name__)
 
