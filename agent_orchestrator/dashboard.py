@@ -699,6 +699,11 @@ def _dashboard_client_config() -> dict[str, str]:
             else data.get(key, default)
         )
         result[key] = str(value or "").strip()
+    projects_root = Path(
+        os.path.expandvars(result["projects_root"])
+    ).expanduser()
+    if not projects_root.is_dir():
+        result["projects_root"] = str(Path.home())
     return result
 
 
@@ -6812,6 +6817,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         cwd = (raw or default_cwd).strip()
         if cwd:
             cwd = os.path.expanduser(os.path.expandvars(cwd))
+        if not os.path.isdir(cwd):
+            raise HTTPException(
+                400, f"working directory does not exist: {cwd}"
+            )
         return cwd
 
     @app.post("/api/create")

@@ -184,6 +184,30 @@ class DashboardAuthenticationTests(unittest.TestCase):
         self.assertIsNone(app.state.active_snapshot_autosave_thread)
         self.assertFalse(thread.is_alive())
 
+    def test_missing_projects_root_falls_back_to_home(self):
+        with patch.dict(os.environ, {
+            "ORCH_PROJECTS_ROOT": "/definitely/missing/projects/root",
+        }):
+            config = dashboard._dashboard_client_config()
+
+        self.assertEqual(config["projects_root"], str(Path.home()))
+
+    def test_create_rejects_a_missing_working_directory(self):
+        with TestClient(self.app) as client:
+            client.get("/?token=test-token")
+            response = client.post("/api/create", json={
+                "agent": "codex",
+                "mode": "background",
+                "cwd": "/definitely/missing/working/directory",
+            })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "working directory does not exist: "
+            "/definitely/missing/working/directory",
+        )
+
 
 class CleanCommandTests(unittest.TestCase):
     def test_clean_only_stops_orchestrator_sessions(self):

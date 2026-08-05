@@ -2235,8 +2235,8 @@
         </label>
         <label class="fld">
           <span>Working dir</span>
-          <input id="new-cwd" type="text" value="~/Documents/Projects"
-                 placeholder="~/Documents/Projects" autocomplete="off" />
+          <input id="new-cwd" type="text" value="~"
+                 placeholder="~/project" autocomplete="off" />
         </label>
         <div class="modal-hint">
           <b>Resume</b>: start a new tmux session using the selected session's
@@ -2322,7 +2322,7 @@
     notes_url: "",
     projects_browser_url: "http://127.0.0.1:8080/",
     git_status_url: "http://127.0.0.1:8501/",
-    projects_root: "~/Documents/Projects",
+    projects_root: "~",
   };
   let NOTES_URL = DEFAULT_DASHBOARD_CONFIG.notes_url;
   let PROJECTS_BROWSER_URL = DEFAULT_DASHBOARD_CONFIG.projects_browser_url;
@@ -8271,7 +8271,7 @@
       $("new-label").value = "";
       $("new-model").value = "";
       $("new-effort").value = "";
-      $("new-cwd").value = PROJECTS_ROOT || "~/Documents/Projects";
+      $("new-cwd").value = PROJECTS_ROOT || "~";
       $("new-kind").value = "new";
       updateNewSessionMode();
       setTimeout(refreshList, 1200);
