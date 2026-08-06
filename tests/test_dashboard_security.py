@@ -125,10 +125,13 @@ class DashboardAuthenticationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.autosave = os.environ.get("ORCH_ACTIVE_SNAPSHOT_AUTOSAVE")
         os.environ["ORCH_ACTIVE_SNAPSHOT_AUTOSAVE"] = "0"
-        cls.app = dashboard.create_app(
-            Path("/nonexistent/agent-orchestrator-auth-test"),
-            token="test-token", ttyd_enabled=False,
-        )
+        with patch.dict(os.environ, {
+            "ORCH_DASHBOARD_CONFIG": "/nonexistent/dashboard.local.json",
+        }):
+            cls.app = dashboard.create_app(
+                Path("/nonexistent/agent-orchestrator-auth-test"),
+                token="test-token", ttyd_enabled=False,
+            )
 
     @classmethod
     def tearDownClass(cls):
@@ -305,6 +308,21 @@ class SyncStatusTests(unittest.TestCase):
             self.assertIn("repo/.git/HEAD", paths)
             self.assertIn("repo/code.py", paths)
             self.assertNotIn("repo/.git/objects/aa/blob", paths)
+
+    def test_comparison_uses_rsync_compatible_timestamp_precision(self):
+        local = sync_status.FileRecord(
+            "same.txt", "file", 4, 1_700_000_000_987_654_321
+        )
+        remote = sync_status.FileRecord(
+            "same.txt", "file", 4, 1_700_000_000_000_000_000
+        )
+
+        result = sync_status.classify_records(
+            {"same.txt": local}, {"same.txt": remote}, {"same.txt": remote}
+        )
+
+        self.assertEqual(result["counts"]["unchanged"], 1)
+        self.assertEqual(result["counts"]["local_only"], 0)
 
 
 class CleanCommandTests(unittest.TestCase):

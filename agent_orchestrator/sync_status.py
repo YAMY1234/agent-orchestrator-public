@@ -302,7 +302,8 @@ def scan_paths(root: Path, paths: Iterable[str],
                 dir_names[:] = kept_dirs
                 for name in file_names:
                     rel = (PurePosixPath(current_rel) / name).as_posix()
-                    if rel in seen or _matches_exclude(rel, False, excludes):
+                    if (name == ".git" or rel in seen
+                            or _matches_exclude(rel, False, excludes)):
                         continue
                     path = current_path / name
                     record = _record_for_path(
@@ -465,7 +466,10 @@ def _records_equal(left: Optional[FileRecord],
         return False
     if left.digest and right.digest:
         return left.digest == right.digest
-    return left.mtime_ns == right.mtime_ns
+    # rsync 2.6.x (still shipped by macOS) preserves file times only to whole
+    # seconds. Comparing nanoseconds would report every migrated file as
+    # changed when the destination filesystem zeroes the fractional part.
+    return left.mtime_ns // 1_000_000_000 == right.mtime_ns // 1_000_000_000
 
 
 def classify_records(local: dict[str, FileRecord],
@@ -782,6 +786,8 @@ class SyncStatusService:
                 return_code = proc.wait()
             finally:
                 timer.cancel()
+                if proc.stdout is not None:
+                    proc.stdout.close()
                 with self._lock:
                     if self._active_proc is proc:
                         self._active_proc = None
@@ -807,7 +813,7 @@ class SyncStatusService:
         provisional = classify_records(local, remote, baseline)["changes"]
         candidates = []
         for item in provisional:
-            if item["state"] != "conflict":
+            if item["state"] not in {"conflict", "same_change"}:
                 continue
             left = local.get(item["path"])
             right = remote.get(item["path"])
