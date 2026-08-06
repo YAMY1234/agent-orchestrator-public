@@ -7593,8 +7593,11 @@ def main():
     print()
 
     try:
+        # Do not let stale browser/ttyd WebSockets block a deployment forever.
+        # Agent tmux sessions are separate and remain untouched by this limit.
         uvicorn.run(app, host=args.host, port=args.port, reload=args.reload,
-                    log_level="info", access_log=False, **ssl_kwargs)
+                    log_level="info", access_log=False,
+                    timeout_graceful_shutdown=5, **ssl_kwargs)
     finally:
         app.state.ttyd.stop_all()
 
