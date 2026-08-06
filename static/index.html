@@ -1008,6 +1008,7 @@
   }
   .sync-modal { max-width: 760px; max-height: min(780px, 88vh); }
   .sync-modal .modal-body { min-height: 0; overflow: hidden; }
+  .sync-modal .modal-foot { flex-wrap: wrap; }
   .sync-summary {
     display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
   }
@@ -2317,11 +2318,19 @@
           remote snapshot in Agent Orchestrator's local state database; it does
           not copy or modify project files.
         </div>
+        <div class="modal-hint" id="sync-safety-hint">
+          Sync transfers only one-sided file additions and updates. Conflicts,
+          active workspaces, Git refs, oversized files, and deletions are
+          reported but never overwritten or deleted automatically.
+        </div>
         <div class="sync-change-list" id="sync-change-list"></div>
       </div>
       <div class="modal-foot">
         <button class="btn-secondary" id="sync-baseline" hidden>Use remote as baseline</button>
         <button class="btn-secondary" id="sync-refresh">Refresh status</button>
+        <button class="btn-secondary" id="sync-auto">Auto sync: off</button>
+        <button class="btn-secondary" id="sync-when-idle">Sync when idle</button>
+        <button class="btn-primary" id="sync-now">Sync now</button>
         <button class="btn-secondary" id="sync-close-2">Close</button>
       </div>
     </div>
@@ -2546,13 +2555,19 @@
     btn.hidden = false;
     btn.classList.remove("ok", "warn", "err");
     const counts = syncStatus.counts || {};
+    const job = syncStatus.sync_job || { state: "idle" };
     const conflicts = Number(counts.conflict || 0);
     const localOnly = Number(counts.local_only || 0);
     const remoteOnly = Number(counts.remote_only || 0);
-    if (syncStatus.phase === "degraded" || conflicts) btn.classList.add("err");
-    else if (syncStatus.scanning || !syncStatus.baseline_initialized || remoteOnly) btn.classList.add("warn");
+    if (syncStatus.phase === "degraded" || conflicts
+        || ["failed", "blocked"].includes(job.state)) btn.classList.add("err");
+    else if (syncStatus.scanning || !syncStatus.baseline_initialized || remoteOnly
+        || ["queued", "checking", "running", "waiting_idle"].includes(job.state)) btn.classList.add("warn");
     else btn.classList.add("ok");
-    if (syncStatus.scanning) btn.textContent = "sync: scanning…";
+    if (["queued", "checking", "running"].includes(job.state)) btn.textContent = `sync: ${job.state}…`;
+    else if (job.state === "waiting_idle") btn.textContent = "sync: waiting idle";
+    else if (job.state === "failed" || job.state === "blocked") btn.textContent = `sync: ${job.state}`;
+    else if (syncStatus.scanning) btn.textContent = "sync: scanning…";
     else if (!syncStatus.baseline_initialized) btn.textContent = "sync: baseline needed";
     else if (conflicts) btn.textContent = `sync: ${conflicts} conflict${conflicts === 1 ? "" : "s"}`;
     else if (localOnly || remoteOnly) btn.textContent = `sync: ${localOnly}↑ ${remoteOnly}↓`;
@@ -2568,16 +2583,29 @@
     const fileCounts = syncStatus.files || {};
     const pending = Number(syncStatus.pending_events || 0);
     const parts = [
-      `${syncEscape(syncStatus.label || "Remote")} · read-only`,
+      `${syncEscape(syncStatus.label || "Remote")} · safe sync · no automatic deletes`,
       `watcher: ${syncEscape(syncStatus.watcher || "unknown")}`,
       `last scan: ${syncEscape(scanText)}`,
       `local/remote files: ${Number(fileCounts.local || 0).toLocaleString()} / ${Number(fileCounts.remote || 0).toLocaleString()}`,
     ];
     if (pending) parts.push(`${pending} pending event${pending === 1 ? "" : "s"}`);
+    if (job.state && job.state !== "idle") {
+      const jobPlan = job.plan || {};
+      let jobText = `job: ${syncEscape(job.state)}`;
+      if (jobPlan.push || jobPlan.pull) jobText += ` (${Number(jobPlan.push || 0)}↑ ${Number(jobPlan.pull || 0)}↓)`;
+      if (job.reason) jobText += ` — ${syncEscape(job.reason)}`;
+      parts.push(jobText);
+    }
     if (syncStatus.last_error) parts.push(`error: ${syncEscape(syncStatus.last_error)}`);
     $("sync-meta").innerHTML = parts.join(" &nbsp;·&nbsp; ");
     $("sync-baseline").hidden = !!syncStatus.baseline_initialized;
     $("sync-baseline-hint").hidden = !!syncStatus.baseline_initialized;
+    const activeJob = ["queued", "checking", "running", "waiting_idle"].includes(job.state);
+    $("sync-now").disabled = !syncStatus.baseline_initialized || activeJob;
+    $("sync-when-idle").disabled = !syncStatus.baseline_initialized || activeJob;
+    $("sync-auto").disabled = !syncStatus.baseline_initialized;
+    $("sync-auto").textContent = `Auto sync: ${syncStatus.auto_sync ? "on" : "off"}`;
+    $("sync-auto").classList.toggle("toggle-on", !!syncStatus.auto_sync);
 
     const list = $("sync-change-list");
     const changes = syncStatus.changes || [];
@@ -2639,6 +2667,37 @@
       await pollSyncStatus(false);
     } catch (e) {
       alert("Baseline initialization failed:\n" + e.message);
+    }
+  });
+  async function queueWorkspaceSync(mode) {
+    const message = mode === "now"
+      ? "Sync all currently safe one-sided changes now? Busy paths will be skipped."
+      : "Queue a sync that waits until every affected workspace is idle?";
+    if (!window.confirm(
+      message + "\n\nConflicts and deletions are never applied automatically."
+    )) return;
+    try {
+      await api("/api/sync/run", { method: "POST", body: { mode } });
+      await pollSyncStatus(false);
+      setTimeout(() => pollSyncStatus(true), 1500);
+      setTimeout(() => pollSyncStatus(true), 5000);
+    } catch (e) {
+      alert("Sync request failed:\n" + e.message);
+    }
+  }
+  $("sync-now").addEventListener("click", () => queueWorkspaceSync("now"));
+  $("sync-when-idle").addEventListener("click", () => queueWorkspaceSync("when_idle"));
+  $("sync-auto").addEventListener("click", async () => {
+    const enabled = !syncStatus.auto_sync;
+    if (enabled && !window.confirm(
+      "Enable continuous Sync when idle?\n\n" +
+      "Only one-sided additions and updates are transferred. Conflicts, busy paths, deletions, and Git refs remain untouched."
+    )) return;
+    try {
+      await api("/api/sync/auto", { method: "POST", body: { enabled } });
+      await pollSyncStatus(false);
+    } catch (e) {
+      alert("Auto sync update failed:\n" + e.message);
     }
   });
 

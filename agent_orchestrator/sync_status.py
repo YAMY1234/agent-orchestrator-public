@@ -1,8 +1,8 @@
-"""Read-only, conflict-aware status for a pair of workspace trees.
+"""Conflict-aware status and safe transfer for a pair of workspace trees.
 
-The service intentionally does not copy, delete, or overwrite project files.
-It maintains a persistent comparison baseline and uses filesystem events to
-refresh only paths that changed locally.  A low-frequency full scan catches
+Monitoring is read-only by default. Explicit or opt-in background sync copies
+only one-sided additions and updates; conflicts and deletions remain untouched.
+Filesystem events refresh local changes, while periodic reconciliation catches
 missed events and refreshes the remote side over SSH.
 """
 
@@ -25,7 +25,9 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
+
+from .sync_transfer import WorkspaceTransfer, build_transfer_plan
 
 
 DEFAULT_EXCLUDES = (
@@ -81,6 +83,8 @@ class SyncSettings:
     remote_python: str = "python3"
     remote_code_root: str = ""
     state_db: str = ""
+    max_file_bytes: int = 512 * 1024 * 1024
+    transfer_timeout_seconds: float = 3600.0
 
     @property
     def local_path(self) -> Path:
@@ -151,6 +155,12 @@ def settings_from_dict(data: dict[str, Any], *, config_dir: Path) -> SyncSetting
         or "python3",
         remote_code_root=str(raw.get("remote_code_root", "")).strip(),
         state_db=str(raw.get("state_db", "")).strip(),
+        max_file_bytes=max(
+            1, int(float(raw.get("max_file_mb", 512)) * 1024 * 1024)
+        ),
+        transfer_timeout_seconds=max(
+            60.0, float(raw.get("transfer_timeout_seconds", 3600.0))
+        ),
     )
 
 
@@ -419,6 +429,14 @@ class SyncStore:
             )
         return len(rows)
 
+    def delete(self, side: str, paths: Iterable[str]) -> int:
+        rows = [(side, path) for path in paths]
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "DELETE FROM entries WHERE side = ? AND path = ?", rows,
+            )
+        return len(rows)
+
     def records(self, side: str) -> dict[str, FileRecord]:
         with self._lock:
             rows = self._conn.execute(
@@ -515,7 +533,8 @@ class _EventHandler:
 
 
 class SyncStatusService:
-    def __init__(self, settings: SyncSettings):
+    def __init__(self, settings: SyncSettings,
+                 busy_paths_provider: Optional[Callable[[], Iterable[str]]] = None):
         self.settings = settings
         self.store: Optional[SyncStore] = None
         self._stop = threading.Event()
@@ -531,11 +550,26 @@ class SyncStatusService:
         self._scanning = False
         self._watcher = "disabled" if not settings.enabled else "pending"
         self._cached_status: Optional[dict[str, Any]] = None
+        self._busy_paths_provider = busy_paths_provider or (lambda: ())
+        self._transfer = WorkspaceTransfer(
+            local_root=settings.local_path,
+            remote_root=settings.remote_root,
+            remote_host=settings.remote_host,
+            excludes=settings.excludes,
+            timeout_seconds=settings.transfer_timeout_seconds,
+        )
+        self._sync_request = ""
+        self._sync_needs_refresh = False
+        self._sync_waiting_writers = False
+        self._auto_sync = False
+        self._auto_armed = True
+        self._sync_job: dict[str, Any] = {"state": "idle"}
 
     def start(self) -> None:
         if not self.settings.enabled or self._thread is not None:
             return
         self.store = SyncStore(self.settings.database_path)
+        self._auto_sync = bool(self.store.get_meta("auto_sync", False))
         self._start_watcher()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="orch-sync-status"
@@ -618,12 +652,47 @@ class SyncStatusService:
             return
         with self._lock:
             self._dirty.add(rel)
+            self._sync_needs_refresh = True
+            self._auto_armed = True
         self._wake.set()
 
     def request_refresh(self) -> None:
         with self._lock:
             self._force_full = True
         self._wake.set()
+
+    def request_sync(self, mode: str) -> None:
+        if mode not in {"now", "when_idle"}:
+            raise ValueError("sync mode must be now or when_idle")
+        if not self.store or not self.store.get_meta("baseline_initialized_at", ""):
+            raise RuntimeError("initialize the sync baseline first")
+        with self._lock:
+            if self._sync_request or self._sync_job.get("state") in {
+                    "queued", "checking", "running", "waiting_idle"}:
+                raise RuntimeError("a workspace sync is already active")
+            self._sync_request = mode
+            self._sync_needs_refresh = True
+            self._sync_waiting_writers = False
+            self._sync_job = {
+                "state": "queued", "mode": mode, "queued_at": _utc_now(),
+            }
+        self._wake.set()
+
+    def set_auto_sync(self, enabled: bool) -> None:
+        if not self.store:
+            raise RuntimeError("sync status is not running")
+        self._auto_sync = bool(enabled)
+        self._auto_armed = bool(enabled)
+        self.store.set_meta("auto_sync", self._auto_sync)
+        if enabled:
+            with self._lock:
+                self._force_full = True
+            self._wake.set()
+        else:
+            with self._lock:
+                if self._sync_job.get("automatic") and self._sync_request:
+                    self._sync_request = ""
+                    self._sync_job = {"state": "idle"}
 
     def initialize_baseline(self, source: str = "remote") -> int:
         if source not in {"local", "remote"}:
@@ -646,22 +715,174 @@ class SyncStatusService:
     def _run(self) -> None:
         next_full = 0.0
         while not self._stop.is_set():
+            with self._lock:
+                sync_request = self._sync_request
+            if sync_request:
+                completed = self._execute_sync_request(sync_request)
+                if not completed:
+                    self._wake.wait(10)
+                    self._wake.clear()
+                continue
             now = time.monotonic()
             with self._lock:
                 force_full = self._force_full
                 has_dirty = bool(self._dirty)
             if force_full or now >= next_full:
                 self._refresh(full=True)
+                self._queue_auto_sync()
                 next_full = time.monotonic() + self.settings.scan_interval_seconds
                 continue
             if has_dirty:
                 if self._stop.wait(self.settings.debounce_seconds):
                     break
                 self._refresh(full=False)
+                self._queue_auto_sync()
                 continue
             timeout = max(1.0, min(60.0, next_full - now))
             self._wake.wait(timeout)
             self._wake.clear()
+
+    def _queue_auto_sync(self) -> None:
+        if not self._auto_sync or not self._auto_armed or not self.store:
+            return
+        comparison = classify_records(
+            self.store.records("local"), self.store.records("remote"),
+            self.store.records("baseline"),
+        )
+        transferable = any(
+            item["state"] in {"local_only", "remote_only"}
+            and item.get("kind") != "git-head"
+            and (item.get("local_present") if item["state"] == "local_only"
+                 else item.get("remote_present"))
+            and int(item.get("size") or 0) <= self.settings.max_file_bytes
+            for item in comparison["changes"]
+        )
+        if transferable:
+            with self._lock:
+                self._sync_request = "when_idle"
+                self._sync_needs_refresh = True
+                self._sync_job = {
+                    "state": "queued", "mode": "when_idle",
+                    "queued_at": _utc_now(), "automatic": True,
+                }
+
+    def _execute_sync_request(self, mode: str) -> bool:
+        if not self.store:
+            return True
+        with self._lock:
+            needs_refresh = self._sync_needs_refresh
+            self._sync_job = {
+                **self._sync_job, "state": "checking", "mode": mode,
+            }
+        if needs_refresh:
+            self._refresh(full=True)
+            with self._lock:
+                self._sync_needs_refresh = False
+            if self._phase != "ready":
+                self._finish_sync("failed", {
+                    "reason": self._last_error or "workspace refresh failed",
+                })
+                return True
+        comparison = classify_records(
+            self.store.records("local"), self.store.records("remote"),
+            self.store.records("baseline"),
+        )
+        agreements_accepted = self._advance_agreements(comparison)
+        if agreements_accepted:
+            comparison = classify_records(
+                self.store.records("local"), self.store.records("remote"),
+                self.store.records("baseline"),
+            )
+        if comparison["counts"]["conflict"]:
+            self._finish_sync("blocked", {
+                "reason": "resolve conflicts before syncing",
+                "conflicts": comparison["counts"]["conflict"],
+            })
+            return True
+        try:
+            local_busy = tuple(self._busy_paths_provider())
+            remote_busy = tuple(self._transfer.remote_active_paths())
+        except Exception as exc:
+            self._finish_sync("failed", {"reason": str(exc)})
+            return True
+        plan = build_transfer_plan(
+            comparison["changes"], local_busy=local_busy,
+            remote_busy=remote_busy,
+            max_file_bytes=self.settings.max_file_bytes,
+        )
+        if mode == "when_idle" and plan.busy:
+            with self._lock:
+                self._sync_waiting_writers = True
+                self._sync_job = {
+                    **self._sync_job,
+                    "state": "waiting_idle",
+                    "plan": plan.summary(),
+                    "busy_preview": plan.busy[:20],
+                }
+            return False
+        if self._sync_waiting_writers:
+            with self._lock:
+                self._sync_waiting_writers = False
+                self._sync_needs_refresh = True
+            return False
+        if not plan.actionable:
+            self._finish_sync("complete", {
+                "plan": plan.summary(), "transferred_items": 0,
+                "agreements_accepted": agreements_accepted,
+            })
+            return True
+        with self._lock:
+            self._sync_job = {
+                **self._sync_job, "state": "running",
+                "started_at": _utc_now(), "plan": plan.summary(),
+            }
+        try:
+            result = self._transfer.execute(plan)
+            attempted = set(plan.push) | set(plan.pull)
+            self._refresh(full=True)
+            if self._phase != "ready":
+                raise RuntimeError(
+                    self._last_error or "post-transfer verification failed"
+                )
+            local = self.store.records("local")
+            remote = self.store.records("remote")
+            accepted = [local[path] for path in attempted
+                        if path in local and _records_equal(local.get(path), remote.get(path))]
+            self.store.merge("baseline", accepted)
+            self._cached_status = self._build_status()
+            self._finish_sync("complete", {
+                **result, "accepted": len(accepted),
+                "agreements_accepted": agreements_accepted,
+            })
+        except Exception as exc:
+            self._finish_sync("failed", {"reason": str(exc)})
+        return True
+
+    def _finish_sync(self, state: str, details: dict[str, Any]) -> None:
+        with self._lock:
+            self._sync_job = {
+                **self._sync_job, **details, "state": state,
+                "finished_at": _utc_now(),
+            }
+            self._sync_request = ""
+            self._sync_needs_refresh = False
+            self._sync_waiting_writers = False
+            self._auto_armed = False
+        self._cached_status = self._build_status() if self.store else None
+
+    def _advance_agreements(self, comparison: dict[str, Any]) -> int:
+        """Move the baseline to changes that already agree on both hosts."""
+        assert self.store is not None
+        agreed = [item["path"] for item in comparison["changes"]
+                  if item["state"] == "same_change"]
+        if not agreed:
+            return 0
+        local = self.store.records("local")
+        present = [local[path] for path in agreed if path in local]
+        absent = [path for path in agreed if path not in local]
+        self.store.merge("baseline", present)
+        self.store.delete("baseline", absent)
+        return len(agreed)
 
     def _refresh(self, *, full: bool) -> None:
         if not self.store:
@@ -828,7 +1049,9 @@ class SyncStatusService:
                 "watcher": self._watcher,
                 "scanning": self._scanning,
                 "pending_events": len(self._dirty),
-                "read_only": True,
+                "read_only_status": True,
+                "transfer_actions": True,
+                "automatic_deletes": False,
             }
 
     def status(self) -> dict[str, Any]:
@@ -846,6 +1069,8 @@ class SyncStatusService:
         with self._lock:
             result["pending_events"] = len(self._dirty)
             result["scanning"] = self._scanning
+            result["auto_sync"] = self._auto_sync
+            result["sync_job"] = dict(self._sync_job)
         return result
 
     def _build_status(self) -> dict[str, Any]:
@@ -883,7 +1108,11 @@ class SyncStatusService:
             "counts": comparison["counts"],
             "changes": changes[:200],
             "changes_omitted": max(0, len(changes) - 200),
-            "read_only": True,
+            "read_only_status": True,
+            "transfer_actions": True,
+            "automatic_deletes": False,
+            "auto_sync": self._auto_sync,
+            "sync_job": dict(self._sync_job),
         }
 
 

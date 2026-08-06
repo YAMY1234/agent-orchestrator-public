@@ -11,7 +11,9 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agent_orchestrator import cli, dashboard, local_settings, sync_status
+from agent_orchestrator import (
+    cli, dashboard, local_settings, sync_status, sync_transfer,
+)
 from agent_orchestrator import terminal_theme
 from launchd.render_plist import render_plist
 
@@ -309,6 +311,95 @@ class SyncStatusTests(unittest.TestCase):
             self.assertIn("repo/code.py", paths)
             self.assertNotIn("repo/.git/objects/aa/blob", paths)
 
+    def test_service_syncs_one_sided_update_and_advances_baseline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            (local / "task.txt").write_text("base")
+            (remote / "task.txt").write_text("base")
+            stamp = 1_700_000_000_000_000_000
+            os.utime(local / "task.txt", ns=(stamp, stamp))
+            os.utime(remote / "task.txt", ns=(stamp, stamp))
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("task.txt",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                (local / "task.txt").write_text("new local content")
+                service.request_sync("now")
+
+                self.assertTrue(service._execute_sync_request("now"))
+
+                self.assertEqual(
+                    (remote / "task.txt").read_text(), "new local content"
+                )
+                status = service.status()
+                self.assertEqual(status["sync_job"]["state"], "complete")
+                self.assertEqual(status["counts"]["local_only"], 0)
+                self.assertEqual(status["counts"]["conflict"], 0)
+            finally:
+                service.stop()
+
+    def test_sync_accepts_existing_agreement_as_the_new_baseline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            (local / "task.txt").write_text("base")
+            (remote / "task.txt").write_text("base")
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("task.txt",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                (local / "task.txt").write_text("same on both")
+                (remote / "task.txt").write_text("same on both")
+                service.request_sync("now")
+
+                self.assertTrue(service._execute_sync_request("now"))
+
+                status = service.status()
+                self.assertEqual(status["sync_job"]["agreements_accepted"], 1)
+                self.assertEqual(status["counts"]["same_change"], 0)
+                self.assertEqual(status["counts"]["unchanged"], 1)
+            finally:
+                service.stop()
+
+    def test_rejects_a_second_sync_while_one_is_queued(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            (local / "task.txt").write_text("base")
+            (remote / "task.txt").write_text("base")
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("task.txt",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                service.request_sync("when_idle")
+
+                with self.assertRaisesRegex(RuntimeError, "already active"):
+                    service.request_sync("now")
+            finally:
+                service.stop()
+
     def test_comparison_uses_rsync_compatible_timestamp_precision(self):
         local = sync_status.FileRecord(
             "same.txt", "file", 4, 1_700_000_000_987_654_321
@@ -323,6 +414,79 @@ class SyncStatusTests(unittest.TestCase):
 
         self.assertEqual(result["counts"]["unchanged"], 1)
         self.assertEqual(result["counts"]["local_only"], 0)
+
+
+class SyncTransferTests(unittest.TestCase):
+    def test_plan_skips_conflicts_deletions_git_large_and_busy_paths(self):
+        changes = [
+            {"path": "push.txt", "state": "local_only", "kind": "file",
+             "size": 4, "local_present": True, "remote_present": False},
+            {"path": "pull.txt", "state": "remote_only", "kind": "file",
+             "size": 4, "local_present": False, "remote_present": True},
+            {"path": "busy/out.txt", "state": "local_only", "kind": "file",
+             "size": 4, "local_present": True, "remote_present": False},
+            {"path": "deleted.txt", "state": "local_only", "kind": "file",
+             "size": 4, "local_present": False, "remote_present": True},
+            {"path": "repo/.git/HEAD", "state": "local_only", "kind": "git-head",
+             "size": 40, "local_present": True, "remote_present": True},
+            {"path": "large.bin", "state": "local_only", "kind": "file",
+             "size": 100, "local_present": True, "remote_present": False},
+            {"path": "conflict.txt", "state": "conflict", "kind": "file",
+             "size": 4, "local_present": True, "remote_present": True},
+        ]
+
+        plan = sync_transfer.build_transfer_plan(
+            changes, local_busy=("busy",), max_file_bytes=50,
+        )
+
+        self.assertEqual(plan.push, ["push.txt"])
+        self.assertEqual(plan.pull, ["pull.txt"])
+        self.assertEqual(plan.busy, ["busy/out.txt"])
+        self.assertEqual(plan.deletions, ["deleted.txt"])
+        self.assertEqual(plan.git_refs, ["repo/.git/HEAD"])
+        self.assertEqual(plan.too_large, ["large.bin"])
+        self.assertEqual(plan.conflicts, ["conflict.txt"])
+
+    def test_busy_root_blocks_every_transfer(self):
+        change = {
+            "path": "project/file.txt", "state": "local_only", "kind": "file",
+            "size": 4, "local_present": True, "remote_present": False,
+        }
+        plan = sync_transfer.build_transfer_plan([change], local_busy=("",))
+        self.assertEqual(plan.actionable, 0)
+        self.assertEqual(plan.busy, ["project/file.txt"])
+
+    def test_local_transfer_moves_updates_both_ways_without_deleting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            (local / "project").mkdir(parents=True)
+            (remote / "project").mkdir(parents=True)
+            (local / "project" / "push.txt").write_text("from local")
+            (remote / "project" / "pull.txt").write_text("from remote")
+            (remote / "project" / "keep.txt").write_text("keep")
+            plan = sync_transfer.TransferPlan(
+                push=["project/push.txt"], pull=["project/pull.txt"],
+                deletions=["project/keep.txt"],
+            )
+            transfer = sync_transfer.WorkspaceTransfer(
+                local_root=local, remote_root=str(remote), remote_host="",
+                excludes=(), timeout_seconds=30,
+            )
+
+            result = transfer.execute(plan)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                (remote / "project" / "push.txt").read_text(), "from local"
+            )
+            self.assertEqual(
+                (local / "project" / "pull.txt").read_text(), "from remote"
+            )
+            self.assertEqual(
+                (remote / "project" / "keep.txt").read_text(), "keep"
+            )
 
 
 class CleanCommandTests(unittest.TestCase):

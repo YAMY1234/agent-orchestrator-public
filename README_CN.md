@@ -226,8 +226,11 @@ orch url --json     # 检查所有可访问候选地址
 双端冲突。文件系统事件会快速更新本地变化；低频 reconciliation 则用于捕获遗漏
 事件并刷新远端状态。
 
-这个功能刻意保持只读：它不会复制、删除或覆盖任何项目文件。比较 baseline
-保存在 project tree 之外的 Agent Orchestrator 本地状态目录中。复制
+状态监控默认只读。**Sync now** 只传输当前安全的单端新增和更新；**Sync when
+idle** 会等受影响的本机与远端 agent workspace 都空闲后再执行。持续 auto sync
+默认关闭。冲突、Git refs、超大文件和删除操作都不会被自动应用。
+
+比较 baseline 保存在 project tree 之外的 Agent Orchestrator 本地状态目录中。复制
 [`examples/dashboard.local.json`](examples/dashboard.local.json)，选择需要跟踪的
 workspaces；确认两台机器使用相同 Agent Orchestrator revision 后，再启用
 `sync_status`。

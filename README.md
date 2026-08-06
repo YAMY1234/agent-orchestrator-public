@@ -245,9 +245,14 @@ and true two-sided conflicts. Filesystem events update local changes quickly;
 a low-frequency reconciliation catches missed events and refreshes the remote
 view.
 
-This feature is deliberately read-only. It never copies, deletes, or
-overwrites project files. The comparison baseline lives outside the project
-tree in Agent Orchestrator's local state directory. Copy
+Monitoring is read-only by default. **Sync now** transfers currently safe
+one-sided additions and updates, while **Sync when idle** waits for affected
+local and remote agent workspaces to become quiet. Continuous auto sync is
+available but starts off. Conflicts, Git refs, oversized files, and deletions
+are never applied automatically.
+
+The comparison baseline lives outside the project tree in Agent Orchestrator's
+local state directory. Copy
 [`examples/dashboard.local.json`](examples/dashboard.local.json), select the
 workspaces that should be tracked, and enable `sync_status` only after the same
 Agent Orchestrator revision is available on both machines.

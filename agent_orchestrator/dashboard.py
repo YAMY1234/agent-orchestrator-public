@@ -5556,7 +5556,35 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     dashboard_config_path = Path(
         os.environ.get("ORCH_DASHBOARD_CONFIG", str(DEFAULT_DASHBOARD_CONFIG))
     ).expanduser()
-    sync_status = SyncStatusService(load_sync_settings(dashboard_config_path))
+    sync_settings = load_sync_settings(dashboard_config_path)
+
+    def busy_sync_paths() -> list[str]:
+        if not sync_settings.enabled:
+            return []
+        root = sync_settings.local_path
+        busy_paths = set()
+        for run in _discover_runs(outputs_dir):
+            if (not run.get("alive")
+                    or not (run.get("busy") or run.get("background_active"))):
+                continue
+            candidates = [run.get("cwd", "")]
+            candidates.extend(
+                item.get("path", "")
+                for item in _normalize_linked_folders(run.get("linked_folders"))
+                if item.get("type", "folder") != "url"
+            )
+            for value in candidates:
+                path = Path(str(value or "")).expanduser()
+                if not path.is_absolute():
+                    continue
+                try:
+                    rel = path.resolve(strict=False).relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                busy_paths.add("" if rel == "." else rel)
+        return sorted(busy_paths)
+
+    sync_status = SyncStatusService(sync_settings, busy_sync_paths)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -5747,6 +5775,36 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "source": source, "entries": count, "read_only": True}
+
+    @app.post("/api/sync/run")
+    async def run_workspace_sync(request: Request):
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        mode = str(body.get("mode", "when_idle")) if isinstance(body, dict) else "when_idle"
+        try:
+            sync_status.request_sync(mode)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "queued": True, "mode": mode, "automatic_deletes": False}
+
+    @app.post("/api/sync/auto")
+    async def configure_workspace_auto_sync(request: Request):
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        enabled = bool(body.get("enabled", False)) if isinstance(body, dict) else False
+        try:
+            sync_status.set_auto_sync(enabled)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "enabled": enabled, "automatic_deletes": False}
 
     @app.get("/api/host")
     def host_info():
