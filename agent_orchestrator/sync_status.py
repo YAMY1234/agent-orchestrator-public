@@ -260,16 +260,6 @@ def _git_records(worktree: Path, rel: str) -> Iterator[FileRecord]:
             size=len(head), mtime_ns=0,
             digest=hashlib.sha256(head.encode()).hexdigest(),
         )
-    index = git_dir / "index"
-    try:
-        st = index.stat()
-    except OSError:
-        return
-    yield FileRecord(
-        path=f"{rel}/.git/index".strip("/"), kind="git-index",
-        size=int(st.st_size), mtime_ns=int(st.st_mtime_ns),
-        digest=_sha256(index),
-    )
 
 
 def scan_paths(root: Path, paths: Iterable[str],
