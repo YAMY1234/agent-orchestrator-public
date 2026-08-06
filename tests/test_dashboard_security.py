@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agent_orchestrator import cli, dashboard, local_settings
+from agent_orchestrator import cli, dashboard, local_settings, sync_status
 from agent_orchestrator import terminal_theme
 from launchd.render_plist import render_plist
 
@@ -207,6 +207,104 @@ class DashboardAuthenticationTests(unittest.TestCase):
             "working directory does not exist: "
             "/definitely/missing/working/directory",
         )
+
+    def test_sync_status_is_disabled_by_default(self):
+        with TestClient(self.app) as client:
+            client.get("/?token=test-token")
+            response = client.get("/api/sync/status")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {
+                "enabled": False,
+                "phase": "disabled",
+            })
+
+
+class SyncStatusTests(unittest.TestCase):
+    def test_classifies_one_sided_changes_deletions_and_conflicts(self):
+        record = sync_status.FileRecord
+        baseline = {
+            name: record(name, "file", 4, 1)
+            for name in ("local", "remote", "conflict", "same", "deleted")
+        }
+        local = dict(baseline)
+        remote = dict(baseline)
+        local["local"] = record("local", "file", 5, 2)
+        remote["remote"] = record("remote", "file", 6, 2)
+        local["conflict"] = record("conflict", "file", 7, 2)
+        remote["conflict"] = record("conflict", "file", 8, 3)
+        shared = record("same", "file", 9, 4)
+        local["same"] = shared
+        remote["same"] = shared
+        local.pop("deleted")
+
+        result = sync_status.classify_records(local, remote, baseline)
+
+        self.assertEqual(result["counts"], {
+            "unchanged": 0,
+            "local_only": 2,
+            "remote_only": 1,
+            "same_change": 1,
+            "conflict": 1,
+        })
+
+    def test_service_uses_persistent_remote_baseline_and_content_hashes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            (local / "task.txt").write_text("base")
+            (remote / "task.txt").write_text("base")
+            stamp = 1_700_000_000_000_000_000
+            os.utime(local / "task.txt", ns=(stamp, stamp))
+            os.utime(remote / "task.txt", ns=(stamp, stamp))
+            settings = sync_status.SyncSettings(
+                enabled=True,
+                local_root=str(local),
+                remote_root=str(remote),
+                paths=("task.txt",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            )
+            service = sync_status.SyncStatusService(settings)
+            try:
+                service.refresh_now()
+                self.assertEqual(service.initialize_baseline("remote"), 1)
+
+                (local / "task.txt").write_text("local")
+                service.refresh_now()
+                self.assertEqual(service.status()["counts"]["local_only"], 1)
+
+                (remote / "task.txt").write_text("other")
+                service.refresh_now()
+                self.assertEqual(service.status()["counts"]["conflict"], 1)
+
+                (remote / "task.txt").write_text("local")
+                remote_stamp = stamp + 99_000_000_000
+                os.utime(remote / "task.txt", ns=(remote_stamp, remote_stamp))
+                service.refresh_now()
+                self.assertEqual(service.status()["counts"]["same_change"], 1)
+                self.assertEqual(service.status()["counts"]["conflict"], 0)
+            finally:
+                service.stop()
+
+    def test_scanner_ignores_git_objects_but_tracks_head(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            (repo / ".git" / "refs" / "heads").mkdir(parents=True)
+            (repo / ".git" / "objects" / "aa").mkdir(parents=True)
+            (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+            (repo / ".git" / "refs" / "heads" / "main").write_text("abc123\n")
+            (repo / ".git" / "objects" / "aa" / "blob").write_text("object")
+            (repo / "code.py").write_text("print('ok')\n")
+
+            records = list(sync_status.scan_paths(root, ("repo",), ()))
+            paths = {record.path for record in records}
+
+            self.assertIn("repo/.git/HEAD", paths)
+            self.assertIn("repo/code.py", paths)
+            self.assertNotIn("repo/.git/objects/aa/blob", paths)
 
 
 class CleanCommandTests(unittest.TestCase):

@@ -219,6 +219,19 @@ orch url -q         # 只输出 URL
 orch url --json     # 检查所有可访问候选地址
 ```
 
+## 随时知道最新工作在哪台机器
+
+如果你同时使用本机和远端开发服务器，可选的 **sync status** 视图会让切换状态
+保持清晰。它分别显示只在本机修改、只在远端修改、两边相同修改，以及真正的
+双端冲突。文件系统事件会快速更新本地变化；低频 reconciliation 则用于捕获遗漏
+事件并刷新远端状态。
+
+这个功能刻意保持只读：它不会复制、删除或覆盖任何项目文件。比较 baseline
+保存在 project tree 之外的 Agent Orchestrator 本地状态目录中。复制
+[`examples/dashboard.local.json`](examples/dashboard.local.json)，选择需要跟踪的
+workspaces；确认两台机器使用相同 Agent Orchestrator revision 后，再启用
+`sync_status`。
+
 ## Local-first 安全模型
 
 Agent Orchestrator 可以向本地 terminal sessions 发送输入，应当把它视为一个

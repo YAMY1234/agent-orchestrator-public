@@ -2,5 +2,18 @@
   "notes_url": "",
   "projects_browser_url": "http://127.0.0.1:8080/",
   "git_status_url": "http://127.0.0.1:8501/",
-  "projects_root": "~/Documents/Projects"
+  "projects_root": "~/Documents/Projects",
+  "sync_status": {
+    "enabled": false,
+    "label": "Development server",
+    "local_root": "~/Documents/Projects",
+    "remote_host": "dev-server",
+    "remote_root": "/home/example/Projects",
+    "remote_code_root": "/home/example/agent-orchestrator",
+    "remote_python": "/home/example/agent-orchestrator/.venv/bin/python",
+    "paths": ["my-project", "current/my-task"],
+    "excludes": [".venv/", "node_modules/", "outputs/"],
+    "scan_interval_seconds": 21600,
+    "debounce_seconds": 30
+  }
 }

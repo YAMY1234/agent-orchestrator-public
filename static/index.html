@@ -1006,6 +1006,47 @@
     padding: 12px 14px; border-top: 1px solid var(--border);
     background: var(--bg);
   }
+  .sync-modal { max-width: 760px; max-height: min(780px, 88vh); }
+  .sync-modal .modal-body { min-height: 0; overflow: hidden; }
+  .sync-summary {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+  }
+  .sync-stat {
+    padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg); min-width: 0;
+  }
+  .sync-stat strong { display: block; font-size: 18px; line-height: 1.25; }
+  .sync-stat span { color: var(--text-dim); font-size: 10px; }
+  .sync-stat.local strong { color: var(--accent); }
+  .sync-stat.remote strong { color: var(--warn); }
+  .sync-stat.conflict strong { color: var(--err); }
+  .sync-meta { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+  .sync-change-list {
+    min-height: 120px; max-height: 420px; overflow: auto;
+    border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
+  }
+  .sync-change {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px; align-items: center; padding: 7px 9px;
+    border-bottom: 1px solid var(--border); font-size: 11px;
+  }
+  .sync-change:last-child { border-bottom: 0; }
+  .sync-change-state {
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 1px 6px; color: var(--text-dim); white-space: nowrap;
+  }
+  .sync-change-state.conflict { color: var(--err); border-color: var(--err); }
+  .sync-change-state.local_only { color: var(--accent); border-color: var(--accent); }
+  .sync-change-state.remote_only { color: var(--warn); border-color: var(--warn); }
+  .sync-change-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sync-change-size { color: var(--text-dim); white-space: nowrap; }
+  .sync-empty { padding: 22px; color: var(--text-dim); text-align: center; }
+  #btn-sync-status.ok { color: var(--ok); border-color: var(--ok); }
+  #btn-sync-status.warn { color: var(--warn); border-color: var(--warn); }
+  #btn-sync-status.err { color: var(--err); border-color: var(--err); }
+  @media (max-width: 640px) {
+    .sync-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   .web-modal {
     width: 82vw;
     height: 86vh;
@@ -2257,6 +2298,35 @@
     </div>
   </div>
 
+  <div class="modal-scrim" id="sync-modal" hidden>
+    <div class="modal sync-modal">
+      <div class="modal-head">
+        <div class="modal-title">Workspace sync status</div>
+        <button class="modal-close" id="sync-close" title="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="sync-summary">
+          <div class="sync-stat local"><strong id="sync-local-count">0</strong><span>Local only</span></div>
+          <div class="sync-stat remote"><strong id="sync-remote-count">0</strong><span>Remote only</span></div>
+          <div class="sync-stat conflict"><strong id="sync-conflict-count">0</strong><span>Conflicts</span></div>
+          <div class="sync-stat"><strong id="sync-same-count">0</strong><span>Same on both</span></div>
+        </div>
+        <div class="sync-meta" id="sync-meta">Loading…</div>
+        <div class="modal-hint" id="sync-baseline-hint" hidden>
+          A comparison baseline is required. Initializing it records the current
+          remote snapshot in Agent Orchestrator's local state database; it does
+          not copy or modify project files.
+        </div>
+        <div class="sync-change-list" id="sync-change-list"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-secondary" id="sync-baseline" hidden>Use remote as baseline</button>
+        <button class="btn-secondary" id="sync-refresh">Refresh status</button>
+        <button class="btn-secondary" id="sync-close-2">Close</button>
+      </div>
+    </div>
+  </div>
+
   <main class="main">
     <div class="url-bar" id="url-bar" title="Click to copy the URL to your clipboard, then paste on your phone">
       <span class="url-label">📱</span>
@@ -2284,6 +2354,7 @@
       </div>
       <div class="spacer"></div>
       <div class="quick-actions" aria-label="Quick actions">
+        <button id="btn-sync-status" title="Read-only workspace sync status" hidden>sync: …</button>
         <button id="btn-open-notes" title="Open daily report (⌘D)">daily report</button>
         <button id="btn-open-projects-browser" title="Open local Projects browser">projects</button>
         <button id="btn-open-git-status" title="Open git status (⌘G)">git status</button>
@@ -2447,6 +2518,129 @@
   }
 
   function authQS() { return TOKEN ? "?token=" + encodeURIComponent(TOKEN) : ""; }
+
+  // ---------- Read-only workspace sync status ----------
+  let syncStatus = { enabled: false };
+
+  function syncEscape(value) {
+    return String(value ?? "").replace(/[&<>"']/g, ch => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[ch]));
+  }
+
+  function formatSyncSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+    return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  }
+
+  function renderSyncStatus(status) {
+    syncStatus = status || { enabled: false };
+    const btn = $("btn-sync-status");
+    if (!syncStatus.enabled) {
+      btn.hidden = true;
+      return;
+    }
+    btn.hidden = false;
+    btn.classList.remove("ok", "warn", "err");
+    const counts = syncStatus.counts || {};
+    const conflicts = Number(counts.conflict || 0);
+    const localOnly = Number(counts.local_only || 0);
+    const remoteOnly = Number(counts.remote_only || 0);
+    if (syncStatus.phase === "degraded" || conflicts) btn.classList.add("err");
+    else if (syncStatus.scanning || !syncStatus.baseline_initialized || remoteOnly) btn.classList.add("warn");
+    else btn.classList.add("ok");
+    if (syncStatus.scanning) btn.textContent = "sync: scanning…";
+    else if (!syncStatus.baseline_initialized) btn.textContent = "sync: baseline needed";
+    else if (conflicts) btn.textContent = `sync: ${conflicts} conflict${conflicts === 1 ? "" : "s"}`;
+    else if (localOnly || remoteOnly) btn.textContent = `sync: ${localOnly}↑ ${remoteOnly}↓`;
+    else btn.textContent = "sync: clean";
+    btn.title = syncStatus.last_error || "Read-only workspace sync status";
+
+    $("sync-local-count").textContent = String(localOnly);
+    $("sync-remote-count").textContent = String(remoteOnly);
+    $("sync-conflict-count").textContent = String(conflicts);
+    $("sync-same-count").textContent = String(counts.same_change || 0);
+    const scanText = syncStatus.last_scan_at
+      ? new Date(syncStatus.last_scan_at).toLocaleString() : "not completed";
+    const fileCounts = syncStatus.files || {};
+    const pending = Number(syncStatus.pending_events || 0);
+    const parts = [
+      `${syncEscape(syncStatus.label || "Remote")} · read-only`,
+      `watcher: ${syncEscape(syncStatus.watcher || "unknown")}`,
+      `last scan: ${syncEscape(scanText)}`,
+      `local/remote files: ${Number(fileCounts.local || 0).toLocaleString()} / ${Number(fileCounts.remote || 0).toLocaleString()}`,
+    ];
+    if (pending) parts.push(`${pending} pending event${pending === 1 ? "" : "s"}`);
+    if (syncStatus.last_error) parts.push(`error: ${syncEscape(syncStatus.last_error)}`);
+    $("sync-meta").innerHTML = parts.join(" &nbsp;·&nbsp; ");
+    $("sync-baseline").hidden = !!syncStatus.baseline_initialized;
+    $("sync-baseline-hint").hidden = !!syncStatus.baseline_initialized;
+
+    const list = $("sync-change-list");
+    const changes = syncStatus.changes || [];
+    if (!syncStatus.baseline_initialized) {
+      list.innerHTML = '<div class="sync-empty">Initialize a baseline to classify changes.</div>';
+    } else if (!changes.length) {
+      list.innerHTML = '<div class="sync-empty">No changes from the saved baseline.</div>';
+    } else {
+      list.innerHTML = changes.map(item => `
+        <div class="sync-change" title="${syncEscape(item.path)}">
+          <span class="sync-change-state ${syncEscape(item.state)}">${syncEscape(item.state.replaceAll("_", " "))}</span>
+          <span class="sync-change-path">${syncEscape(item.path)}</span>
+          <span class="sync-change-size">${formatSyncSize(item.size)}</span>
+        </div>`).join("") + (syncStatus.changes_omitted
+          ? `<div class="sync-empty">${Number(syncStatus.changes_omitted).toLocaleString()} more changes omitted</div>` : "");
+    }
+  }
+
+  async function pollSyncStatus(silent = true) {
+    try {
+      renderSyncStatus(await api("/api/sync/status"));
+    } catch (e) {
+      if (!silent) alert("Sync status failed:\n" + e.message);
+    }
+  }
+
+  $("btn-sync-status").addEventListener("click", async () => {
+    $("sync-modal").hidden = false;
+    await pollSyncStatus(false);
+  });
+  const closeSyncModal = () => { $("sync-modal").hidden = true; };
+  $("sync-close").addEventListener("click", closeSyncModal);
+  $("sync-close-2").addEventListener("click", closeSyncModal);
+  $("sync-modal").addEventListener("click", event => {
+    if (event.target === $("sync-modal")) closeSyncModal();
+  });
+  $("sync-refresh").addEventListener("click", async () => {
+    const btn = $("sync-refresh");
+    btn.disabled = true;
+    try {
+      await api("/api/sync/status/refresh", { method: "POST" });
+      setTimeout(() => pollSyncStatus(true), 500);
+      setTimeout(() => pollSyncStatus(true), 2500);
+    } catch (e) {
+      alert("Refresh failed:\n" + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $("sync-baseline").addEventListener("click", async () => {
+    if (!window.confirm(
+      "Use the current remote snapshot as the comparison baseline?\n\n" +
+      "This only writes Agent Orchestrator's local status database. It does not copy or modify project files."
+    )) return;
+    try {
+      await api("/api/sync/status/baseline", {
+        method: "POST", body: { source: "remote" },
+      });
+      await pollSyncStatus(false);
+    } catch (e) {
+      alert("Baseline initialization failed:\n" + e.message);
+    }
+  });
 
   // ---------- Global state ----------
   let sessions = [];
@@ -8534,6 +8728,8 @@
       applyDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
     }
     try { health = await api("/api/health"); } catch {}
+    await pollSyncStatus(true);
+    setInterval(() => pollSyncStatus(true), 30000);
     refreshPhoneUrl();
     setInterval(refreshPhoneUrl, 30000);
     if (!health.ttyd) {

@@ -236,6 +236,22 @@ orch url -q         # print only the URL
 orch url --json     # inspect all reachable candidates
 ```
 
+## Know which machine has the newest work
+
+If you use a local computer and a remote development server, the optional
+**sync status** view keeps the handoff visible. It shows files changed only on
+the local machine, files changed only on the remote machine, matching changes,
+and true two-sided conflicts. Filesystem events update local changes quickly;
+a low-frequency reconciliation catches missed events and refreshes the remote
+view.
+
+This feature is deliberately read-only. It never copies, deletes, or
+overwrites project files. The comparison baseline lives outside the project
+tree in Agent Orchestrator's local state directory. Copy
+[`examples/dashboard.local.json`](examples/dashboard.local.json), select the
+workspaces that should be tracked, and enable `sync_status` only after the same
+Agent Orchestrator revision is available on both machines.
+
 ## Local-first security
 
 Agent Orchestrator can send input to local terminal sessions and should be

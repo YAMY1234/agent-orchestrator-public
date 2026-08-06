@@ -56,6 +56,7 @@ from urllib.parse import urlparse
 
 from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
 from .local_settings import dashboard_token, require_dashboard_auth
+from .sync_status import SyncStatusService, load_settings as load_sync_settings
 from .terminal_theme import (
     normalize_terminal_theme as _normalize_terminal_theme,
     patch_ttyd_index_theme as _patch_ttyd_index_theme,
@@ -5552,9 +5553,14 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     # organize/prune on disk).
     projects_dir = _configured_projects_dir(outputs_dir, projects_dir)
     ttyd = TtydManager(enabled=ttyd_enabled, reserved_ports={port})
+    dashboard_config_path = Path(
+        os.environ.get("ORCH_DASHBOARD_CONFIG", str(DEFAULT_DASHBOARD_CONFIG))
+    ).expanduser()
+    sync_status = SyncStatusService(load_sync_settings(dashboard_config_path))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        sync_status.start()
         if (app.state.active_snapshot_autosave_enabled
                 and app.state.active_snapshot_autosave_thread is None):
             stop_event = threading.Event()
@@ -5604,6 +5610,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 thread.join(timeout=2)
             app.state.active_snapshot_autosave_stop = None
             app.state.active_snapshot_autosave_thread = None
+            sync_status.stop()
 
     app = FastAPI(
         title="Agent Orchestrator Dashboard",
@@ -5619,6 +5626,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     app.state.active_snapshot_autosave_interval = _active_snapshot_autosave_interval()
     app.state.active_snapshot_autosave_stop = None
     app.state.active_snapshot_autosave_thread = None
+    app.state.sync_status = sync_status
 
     # Optional background publisher: write current URL to iCloud Drive so a
     # phone can pick up the latest address without guessing. Writes on IP
@@ -5707,11 +5715,38 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 "enabled": bool(app.state.active_snapshot_autosave_enabled),
                 "interval_seconds": app.state.active_snapshot_autosave_interval,
             },
+            "sync_status": sync_status.health_status(),
         }
 
     @app.get("/api/config")
     def dashboard_config():
         return _dashboard_client_config()
+
+    @app.get("/api/sync/status")
+    def get_sync_status():
+        return sync_status.status()
+
+    @app.post("/api/sync/status/refresh")
+    def refresh_sync_status():
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        sync_status.request_refresh()
+        return {"ok": True, "queued": True, "read_only": True}
+
+    @app.post("/api/sync/status/baseline")
+    async def initialize_sync_status_baseline(request: Request):
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        source = str(body.get("source", "remote")) if isinstance(body, dict) else "remote"
+        try:
+            count = sync_status.initialize_baseline(source)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "source": source, "entries": count, "read_only": True}
 
     @app.get("/api/host")
     def host_info():
