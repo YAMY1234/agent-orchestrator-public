@@ -15,6 +15,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
+from .json_store import edit_json
+
 
 @dataclass
 class TaskState:
@@ -56,7 +58,8 @@ class StateManager:
         with self._lock:
             state = TaskState(**overrides)
             self._cache[name] = state
-            self._flush()
+            with edit_json(self.state_file, create=True) as data:
+                data[name] = asdict(state)
             return state
 
     def get(self, name: str) -> Optional[TaskState]:
@@ -66,14 +69,21 @@ class StateManager:
 
     def update(self, name: str, **kwargs) -> TaskState:
         with self._lock:
-            self._load_from_file_locked()
-            state = self._cache.get(name)
-            if not state:
-                raise KeyError(f"Task '{name}' not found in state")
-            for k, v in kwargs.items():
-                if hasattr(state, k):
-                    setattr(state, k, v)
-            self._flush()
+            with edit_json(self.state_file) as data:
+                raw = data.get(name)
+                if not isinstance(raw, dict):
+                    raise KeyError(f"Task '{name}' not found in state")
+                state = TaskState(**{
+                    key: value for key, value in raw.items()
+                    if hasattr(TaskState, key)
+                })
+                for key, value in kwargs.items():
+                    if hasattr(state, key):
+                        setattr(state, key, value)
+                merged = dict(raw)
+                merged.update(asdict(state))
+                data[name] = merged
+                self._cache[name] = state
             return state
 
     def get_all(self) -> dict[str, TaskState]:
@@ -101,14 +111,6 @@ class StateManager:
                     })
         except (json.JSONDecodeError, TypeError):
             pass
-
-    def _flush(self):
-        data = {}
-        for name, state in self._cache.items():
-            data[name] = asdict(state)
-        self.state_file.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        )
 
     def now(self) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%S")

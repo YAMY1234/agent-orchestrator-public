@@ -55,6 +55,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
+from .json_store import edit_json, write_json
 from .local_settings import dashboard_token, require_dashboard_auth
 from .sync_status import SyncStatusService, load_settings as load_sync_settings
 from .terminal_theme import (
@@ -738,9 +739,7 @@ def _prime_json_cache(paths: list[Path]) -> None:
 
 
 def _safe_write_json(p: Path, data: dict) -> None:
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    tmp.replace(p)
+    write_json(p, data)
 
 
 def _projects_root() -> Path:
@@ -985,63 +984,59 @@ def _update_folder_task_metadata(folder: Path, context: dict[str, str],
                                  label: str) -> dict[str, str]:
     meta_dir = folder / ".orch"
     meta_path = meta_dir / "task.json"
-    existing = _safe_read_json(meta_path) if meta_path.exists() else {}
-    data = existing if isinstance(existing, dict) else {}
     now = _iso_now()
     run_id = str(context.get("run_id") or "")
-    previous_owner = str(data.get("created_by_run_id") or "")
-
-    if not previous_owner:
-        data.update({
-            "schema_version": 1,
-            "path": str(folder),
-            "created_at": now,
-            "created_by_run_id": run_id,
-            "created_by_run_name": context.get("run_name", ""),
-            "created_by_task": context.get("task", ""),
-            "created_by_agent": context.get("agent", ""),
-            "created_by_tmux_session": context.get("tmux_session", ""),
-            "created_by_metadata_path": context.get("metadata_path", ""),
-        })
-
-    data.update({
-        "schema_version": 1,
-        "path": str(folder),
-        "label": label or folder.name,
-        "last_linked_at": now,
-        "last_linked_run_id": run_id,
-        "last_linked_run_name": context.get("run_name", ""),
-        "last_linked_task": context.get("task", ""),
-        "last_linked_agent": context.get("agent", ""),
-        "last_linked_tmux_session": context.get("tmux_session", ""),
-        "last_linked_metadata_path": context.get("metadata_path", ""),
-    })
-
-    history = data.get("link_history")
-    if not isinstance(history, list):
-        history = []
-    event = {
-        "linked_at": now,
-        "run_id": run_id,
-        "run_name": context.get("run_name", ""),
-        "task": context.get("task", ""),
-        "agent": context.get("agent", ""),
-        "tmux_session": context.get("tmux_session", ""),
-        "metadata_path": context.get("metadata_path", ""),
-        "label": label or folder.name,
-    }
-    if not history or any(history[-1].get(k) != event.get(k) for k in ("run_id", "label")):
-        history.append(event)
-    data["link_history"] = history[-25:]
-
     try:
         meta_dir.mkdir(parents=True, exist_ok=True)
-        _safe_write_json(meta_path, data)
-    except OSError as e:
+        with edit_json(meta_path, create=True) as data:
+            previous_owner = str(data.get("created_by_run_id") or "")
+            if not previous_owner:
+                data.update({
+                    "schema_version": 1,
+                    "path": str(folder),
+                    "created_at": now,
+                    "created_by_run_id": run_id,
+                    "created_by_run_name": context.get("run_name", ""),
+                    "created_by_task": context.get("task", ""),
+                    "created_by_agent": context.get("agent", ""),
+                    "created_by_tmux_session": context.get("tmux_session", ""),
+                    "created_by_metadata_path": context.get("metadata_path", ""),
+                })
+            data.update({
+                "schema_version": 1,
+                "path": str(folder),
+                "label": label or folder.name,
+                "last_linked_at": now,
+                "last_linked_run_id": run_id,
+                "last_linked_run_name": context.get("run_name", ""),
+                "last_linked_task": context.get("task", ""),
+                "last_linked_agent": context.get("agent", ""),
+                "last_linked_tmux_session": context.get("tmux_session", ""),
+                "last_linked_metadata_path": context.get("metadata_path", ""),
+            })
+            history = data.get("link_history")
+            if not isinstance(history, list):
+                history = []
+            event = {
+                "linked_at": now,
+                "run_id": run_id,
+                "run_name": context.get("run_name", ""),
+                "task": context.get("task", ""),
+                "agent": context.get("agent", ""),
+                "tmux_session": context.get("tmux_session", ""),
+                "metadata_path": context.get("metadata_path", ""),
+                "label": label or folder.name,
+            }
+            if not history or any(
+                    history[-1].get(k) != event.get(k)
+                    for k in ("run_id", "label")):
+                history.append(event)
+            data["link_history"] = history[-25:]
+            owner = str(data.get("created_by_run_id") or "")
+    except (OSError, ValueError) as e:
         raise HTTPException(500, f"failed to write task metadata: {e}")
 
     warning = ""
-    owner = str(data.get("created_by_run_id") or "")
     if owner and run_id and owner != run_id:
         warning = (
             f"folder was created by run_id {owner}; "
@@ -1815,19 +1810,19 @@ def _persist_linked_path(r: dict[str, Any], linked_path: Path,
         raise HTTPException(400, "session has no run directory")
     if r.get("kind") == "task":
         path = Path(run_dir) / "state.json"
-        data = _safe_read_json(path) or {}
-        task = r.get("task", "")
-        if task not in data or not isinstance(data[task], dict):
-            raise HTTPException(404, "task not found in state.json")
-        changed = _add_linked_path(data[task], linked_path, label, item_type)
-        _safe_write_json(path, data)
+        with edit_json(path) as data:
+            task = r.get("task", "")
+            if task not in data or not isinstance(data[task], dict):
+                raise HTTPException(404, "task not found in state.json")
+            changed = _add_linked_path(
+                data[task], linked_path, label, item_type
+            )
         return changed
     path = Path(run_dir) / "session.json"
     if not path.exists():
         raise HTTPException(400, "session.json not found")
-    data = _safe_read_json(path) or {}
-    changed = _add_linked_path(data, linked_path, label, item_type)
-    _safe_write_json(path, data)
+    with edit_json(path) as data:
+        changed = _add_linked_path(data, linked_path, label, item_type)
     return changed
 
 
@@ -1838,19 +1833,17 @@ def _persist_linked_url(r: dict[str, Any], url: str, label: str) -> bool:
         raise HTTPException(400, "session has no run directory")
     if r.get("kind") == "task":
         path = Path(run_dir) / "state.json"
-        data = _safe_read_json(path) or {}
-        task = r.get("task", "")
-        if task not in data or not isinstance(data[task], dict):
-            raise HTTPException(404, "task not found in state.json")
-        changed = _add_linked_url(data[task], url, label)
-        _safe_write_json(path, data)
+        with edit_json(path) as data:
+            task = r.get("task", "")
+            if task not in data or not isinstance(data[task], dict):
+                raise HTTPException(404, "task not found in state.json")
+            changed = _add_linked_url(data[task], url, label)
         return changed
     path = Path(run_dir) / "session.json"
     if not path.exists():
         raise HTTPException(400, "session.json not found")
-    data = _safe_read_json(path) or {}
-    changed = _add_linked_url(data, url, label)
-    _safe_write_json(path, data)
+    with edit_json(path) as data:
+        changed = _add_linked_url(data, url, label)
     return changed
 
 
@@ -1860,19 +1853,17 @@ def _persist_unlink_folder(r: dict[str, Any], raw_path: str) -> bool:
         raise HTTPException(400, "session has no run directory")
     if r.get("kind") == "task":
         path = Path(run_dir) / "state.json"
-        data = _safe_read_json(path) or {}
-        task = r.get("task", "")
-        if task not in data or not isinstance(data[task], dict):
-            raise HTTPException(404, "task not found in state.json")
-        changed = _remove_linked_folder(data[task], raw_path)
-        _safe_write_json(path, data)
+        with edit_json(path) as data:
+            task = r.get("task", "")
+            if task not in data or not isinstance(data[task], dict):
+                raise HTTPException(404, "task not found in state.json")
+            changed = _remove_linked_folder(data[task], raw_path)
         return changed
     path = Path(run_dir) / "session.json"
     if not path.exists():
         raise HTTPException(400, "session.json not found")
-    data = _safe_read_json(path) or {}
-    changed = _remove_linked_folder(data, raw_path)
-    _safe_write_json(path, data)
+    with edit_json(path) as data:
+        changed = _remove_linked_folder(data, raw_path)
     return changed
 
 
@@ -1888,9 +1879,8 @@ def _write_linked_folders_to_run_dir(run_dir: Path,
         time.sleep(0.1)
     if not session_json.exists():
         raise FileNotFoundError(f"session.json not found at {session_json}")
-    data = _safe_read_json(session_json) or {}
-    data["linked_folders"] = folders
-    _safe_write_json(session_json, data)
+    with edit_json(session_json) as data:
+        data["linked_folders"] = folders
     return len(folders)
 
 
@@ -3077,51 +3067,49 @@ def _persist_resume_metadata(r: dict[str, Any], meta: dict[str, str],
     try:
         if r.get("kind") == "task":
             path = Path(run_dir) / "state.json"
-            data = _safe_read_json(path) or {}
-            task = r.get("task", "")
-            if task not in data or not isinstance(data[task], dict):
-                return False
-            data[task].update(flat)
-            if origin["run_id"]:
-                data[task]["resumed_from_run_id"] = origin["run_id"]
-            if origin["run_dir"]:
-                data[task]["resumed_from_run_dir"] = origin["run_dir"]
-            if origin["resume_source"]:
-                data[task]["resumed_from_resume_source"] = origin["resume_source"]
-            merge_native_resume(data[task])
-            if status:
-                data[task]["status"] = status
-            if status == "stopped":
-                data[task]["stopped_at"] = _iso_now()
-            _safe_write_json(path, data)
+            with edit_json(path) as data:
+                task = r.get("task", "")
+                if task not in data or not isinstance(data[task], dict):
+                    return False
+                data[task].update(flat)
+                if origin["run_id"]:
+                    data[task]["resumed_from_run_id"] = origin["run_id"]
+                if origin["run_dir"]:
+                    data[task]["resumed_from_run_dir"] = origin["run_dir"]
+                if origin["resume_source"]:
+                    data[task]["resumed_from_resume_source"] = origin["resume_source"]
+                merge_native_resume(data[task])
+                if status:
+                    data[task]["status"] = status
+                if status == "stopped":
+                    data[task]["stopped_at"] = _iso_now()
             return True
 
         path = Path(run_dir) / "session.json"
-        data = _safe_read_json(path) or {}
-        data.update(flat)
-        if origin["run_id"]:
-            data["resumed_from_run_id"] = origin["run_id"]
-        if origin["run_dir"]:
-            data["resumed_from_run_dir"] = origin["run_dir"]
-        if origin["resume_source"]:
-            data["resumed_from_resume_source"] = origin["resume_source"]
-        merge_native_resume(data)
-        data["resume"] = {
-            "agent": flat["resume_agent"],
-            "id": flat["resume_id"],
-            "cmd": flat["resume_cmd"],
-            "source": flat["resume_source"],
-            "recorded_at": flat["resume_recorded_at"],
-            "source_path": flat["resume_source_path"],
-            "confidence": flat["resume_confidence"],
-        }
-        if status:
-            data["status"] = status
-        if status == "stopped":
-            data["stopped_at"] = _iso_now()
-        _safe_write_json(path, data)
+        with edit_json(path) as data:
+            data.update(flat)
+            if origin["run_id"]:
+                data["resumed_from_run_id"] = origin["run_id"]
+            if origin["run_dir"]:
+                data["resumed_from_run_dir"] = origin["run_dir"]
+            if origin["resume_source"]:
+                data["resumed_from_resume_source"] = origin["resume_source"]
+            merge_native_resume(data)
+            data["resume"] = {
+                "agent": flat["resume_agent"],
+                "id": flat["resume_id"],
+                "cmd": flat["resume_cmd"],
+                "source": flat["resume_source"],
+                "recorded_at": flat["resume_recorded_at"],
+                "source_path": flat["resume_source_path"],
+                "confidence": flat["resume_confidence"],
+            }
+            if status:
+                data["status"] = status
+            if status == "stopped":
+                data["stopped_at"] = _iso_now()
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -3155,32 +3143,30 @@ def _persist_resume_capture_status(
     try:
         if r.get("kind") == "task":
             path = Path(run_dir) / "state.json"
-            data = _safe_read_json(path) or {}
-            task = r.get("task", "")
-            if task not in data or not isinstance(data[task], dict):
-                return False
-            existing = data[task].get("native_resume")
-            if not isinstance(existing, dict):
-                existing = {}
-            data[task]["native_resume"] = {**existing, "capture": capture}
-            data[task]["resume_capture_status"] = status
-            if error:
-                data[task]["resume_capture_error"] = error
-            _safe_write_json(path, data)
+            with edit_json(path) as data:
+                task = r.get("task", "")
+                if task not in data or not isinstance(data[task], dict):
+                    return False
+                existing = data[task].get("native_resume")
+                if not isinstance(existing, dict):
+                    existing = {}
+                data[task]["native_resume"] = {**existing, "capture": capture}
+                data[task]["resume_capture_status"] = status
+                if error:
+                    data[task]["resume_capture_error"] = error
             return True
 
         path = Path(run_dir) / "session.json"
-        data = _safe_read_json(path) or {}
-        existing = data.get("native_resume")
-        if not isinstance(existing, dict):
-            existing = {}
-        data["native_resume"] = {**existing, "capture": capture}
-        data["resume_capture_status"] = status
-        if error:
-            data["resume_capture_error"] = error
-        _safe_write_json(path, data)
+        with edit_json(path) as data:
+            existing = data.get("native_resume")
+            if not isinstance(existing, dict):
+                existing = {}
+            data["native_resume"] = {**existing, "capture": capture}
+            data["resume_capture_status"] = status
+            if error:
+                data["resume_capture_error"] = error
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -5034,13 +5020,12 @@ def _update_state_json(run_dir: Path, task_name: str, updates: dict) -> bool:
     state_file = run_dir / "state.json"
     if not state_file.exists():
         return False
-    data = _safe_read_json(state_file) or {}
-    if task_name not in data:
-        return False
-    for k, v in updates.items():
-        if k in ALLOWED_STATE_FIELDS:
-            data[task_name][k] = v
-    state_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    with edit_json(state_file) as data:
+        if task_name not in data:
+            return False
+        for k, v in updates.items():
+            if k in ALLOWED_STATE_FIELDS:
+                data[task_name][k] = v
     return True
 
 
@@ -5053,20 +5038,18 @@ def _persist_panel_state(r: dict[str, Any], panel_state: str) -> None:
         )
     if r.get("kind") == "task":
         state_file = Path(r["run_dir"]) / "state.json"
-        data = _safe_read_json(state_file) or {}
-        task = r.get("task", "")
-        if task not in data or not isinstance(data[task], dict):
-            raise HTTPException(404, "task not found in state.json")
-        data[task]["panel_state"] = panel_state
-        _safe_write_json(state_file, data)
+        with edit_json(state_file) as data:
+            task = r.get("task", "")
+            if task not in data or not isinstance(data[task], dict):
+                raise HTTPException(404, "task not found in state.json")
+            data[task]["panel_state"] = panel_state
         return
     if r.get("kind") == "run" and r.get("run_dir"):
         sess_file = Path(r["run_dir"]) / "session.json"
         if not sess_file.exists():
             raise HTTPException(400, "session.json not found")
-        data = _safe_read_json(sess_file) or {}
-        data["panel_state"] = panel_state
-        _safe_write_json(sess_file, data)
+        with edit_json(sess_file) as data:
+            data["panel_state"] = panel_state
         return
     raise HTTPException(
         400,
@@ -5083,20 +5066,18 @@ def _persist_terminal_theme(r: dict[str, Any], terminal_theme: str) -> str:
         )
     if r.get("kind") == "task":
         state_file = Path(r["run_dir"]) / "state.json"
-        data = _safe_read_json(state_file) or {}
-        task = r.get("task", "")
-        if task not in data or not isinstance(data[task], dict):
-            raise HTTPException(404, "task not found in state.json")
-        data[task]["terminal_theme"] = terminal_theme
-        _safe_write_json(state_file, data)
+        with edit_json(state_file) as data:
+            task = r.get("task", "")
+            if task not in data or not isinstance(data[task], dict):
+                raise HTTPException(404, "task not found in state.json")
+            data[task]["terminal_theme"] = terminal_theme
         return terminal_theme
     if r.get("kind") == "run" and r.get("run_dir"):
         sess_file = Path(r["run_dir"]) / "session.json"
         if not sess_file.exists():
             raise HTTPException(400, "session.json not found")
-        data = _safe_read_json(sess_file) or {}
-        data["terminal_theme"] = terminal_theme
-        _safe_write_json(sess_file, data)
+        with edit_json(sess_file) as data:
+            data["terminal_theme"] = terminal_theme
         return terminal_theme
     raise HTTPException(
         400,
@@ -5169,11 +5150,10 @@ def _copy_snapshot_ui_metadata_to_spawned_run(
             "warning": "; ".join(warnings),
         }
 
-    data = _safe_read_json(session_json) or {}
-    data.update(updates)
     try:
-        _safe_write_json(session_json, data)
-    except OSError as exc:
+        with edit_json(session_json) as data:
+            data.update(updates)
+    except (OSError, ValueError) as exc:
         warnings.append(str(exc))
         return {
             "copied": False,
@@ -6617,17 +6597,15 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
         if r["kind"] == "task":
             state_file = Path(r["run_dir"]) / "state.json"
-            data = _safe_read_json(state_file) or {}
-            if r["task"] not in data:
-                raise HTTPException(404, "task not in state.json")
-            data[r["task"]]["label"] = label
-            state_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            with edit_json(state_file) as data:
+                if r["task"] not in data:
+                    raise HTTPException(404, "task not in state.json")
+                data[r["task"]]["label"] = label
         elif r["kind"] == "run" and r.get("run_dir"):
             sess_file = Path(r["run_dir"]) / "session.json"
             if sess_file.exists():
-                data = _safe_read_json(sess_file) or {}
-                data["label"] = label
-                sess_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+                with edit_json(sess_file) as data:
+                    data["label"] = label
             else:
                 # Legacy run dir without session.json → store as orphan label
                 # keyed by tmux session name.
@@ -6815,14 +6793,13 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                             break
                         time.sleep(0.1)
                     if session_json.exists():
-                        data = _safe_read_json(session_json) or {}
-                        data["effort_mode"] = effort_mode
-                        _safe_write_json(session_json, data)
+                        with edit_json(session_json) as data:
+                            data["effort_mode"] = effort_mode
                     else:
                         result["effort_mode_warning"] = (
                             "session.json not ready for effort_mode metadata"
                         )
-                except OSError as exc:
+                except (OSError, ValueError) as exc:
                     result["effort_mode_warning"] = (
                         f"failed to persist effort_mode metadata: {exc}"
                     )

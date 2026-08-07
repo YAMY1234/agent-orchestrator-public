@@ -238,9 +238,8 @@ RUN_ID_Q=$(printf "%q" "$RUN_ID")
 TASK_NAME_Q=$(printf "%q" "$TASK_NAME")
 AGENT_TYPE_Q=$(printf "%q" "$AGENT_TYPE")
 
-tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
-    "cd $CWD_Q && ORCH_RUN_ID=$RUN_ID_Q ORCH_RUN_DIR=$RUN_DIR_Q ORCH_TMUX_SESSION=$SESSION_Q ORCH_SESSION_JSON=$SESSION_JSON_Q ORCH_TASK_NAME=$TASK_NAME_Q ORCH_AGENT_TYPE=$AGENT_TYPE_Q $AGENT_CMD; echo '--- Agent exited ---'; read"
-
+# Create the initial metadata before the agent can issue concurrent `orch`
+# updates. Every later writer uses the shared JSON lock protocol.
 cat > "$SESSION_JSON" <<EOF
 {
   "kind": "run",
@@ -263,6 +262,9 @@ cat > "$SESSION_JSON" <<EOF
   "label": "${LABEL//\"/\\\"}"
 }
 EOF
+
+tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
+    "cd $CWD_Q && ORCH_RUN_ID=$RUN_ID_Q ORCH_RUN_DIR=$RUN_DIR_Q ORCH_TMUX_SESSION=$SESSION_Q ORCH_SESSION_JSON=$SESSION_JSON_Q ORCH_TASK_NAME=$TASK_NAME_Q ORCH_AGENT_TYPE=$AGENT_TYPE_Q $AGENT_CMD; echo '--- Agent exited ---'; read"
 
 # Kill any pre-existing watcher for this RUN_DIR (re-run after crash,
 # or an `orch continue` replacing a daemon). We MUST wait for the old

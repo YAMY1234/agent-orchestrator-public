@@ -1,7 +1,9 @@
+import json
 import os
 import plistlib
 import stat
 import subprocess
+import sys
 import threading
 import tempfile
 import unittest
@@ -15,6 +17,7 @@ from agent_orchestrator import (
     cli, dashboard, local_settings, sync_status, sync_transfer,
 )
 from agent_orchestrator import terminal_theme
+from agent_orchestrator.state import StateManager
 from launchd.render_plist import render_plist
 
 
@@ -94,6 +97,84 @@ class LocalSettingsTests(unittest.TestCase):
                 data["ProgramArguments"][4], "127.0.0.1"
             )
             self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+
+
+class MetadataConcurrencyTests(unittest.TestCase):
+    def test_parallel_link_commands_preserve_metadata_and_every_link(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "run"
+            run_dir.mkdir()
+            metadata = run_dir / "session.json"
+            original = {
+                "kind": "run",
+                "run_id": "concurrent-test::session",
+                "name": "concurrent-test",
+                "agent": "codex",
+                "panel_state": "p1",
+                "terminal_theme": "soft-dark",
+                "resume": {"id": "resume-id"},
+                "linked_folders": [],
+            }
+            metadata.write_text(json.dumps(original))
+            urls = [f"https://example.com/item/{index}" for index in range(16)]
+            processes = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(cli.PROJECT_DIR / "orchestrator.py"),
+                        "link-url",
+                        url,
+                        "--run-dir",
+                        str(run_dir),
+                    ],
+                    cwd=cli.PROJECT_DIR,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for url in urls
+            ]
+
+            results = [process.communicate(timeout=20) for process in processes]
+
+            failures = [
+                f"stdout={stdout}\nstderr={stderr}"
+                for process, (stdout, stderr) in zip(processes, results)
+                if process.returncode
+            ]
+            self.assertEqual(failures, [])
+            saved = json.loads(metadata.read_text())
+            for key, value in original.items():
+                if key != "linked_folders":
+                    self.assertEqual(saved[key], value)
+            self.assertEqual(
+                {item["path"] for item in saved["linked_folders"]}, set(urls)
+            )
+            self.assertEqual(list(run_dir.glob(".session.json.*.tmp")), [])
+
+    def test_state_manager_update_preserves_dashboard_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata = Path(temp_dir) / "state.json"
+            metadata.write_text(json.dumps({
+                "worker": {
+                    "status": "pending",
+                    "panel_state": "p0",
+                    "linked_urls": [{
+                        "path": "https://example.com/evidence",
+                        "label": "Evidence",
+                    }],
+                }
+            }))
+
+            StateManager(metadata).update("worker", status="running")
+
+            saved = json.loads(metadata.read_text())["worker"]
+            self.assertEqual(saved["status"], "running")
+            self.assertEqual(saved["panel_state"], "p0")
+            self.assertEqual(saved["linked_urls"], [{
+                "path": "https://example.com/evidence",
+                "label": "Evidence",
+            }])
 
 
 class TerminalThemeTests(unittest.TestCase):

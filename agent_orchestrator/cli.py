@@ -22,6 +22,7 @@ from .dashboard_network import (
     list_local_ipv4,
     pick_best_ip,
 )
+from .json_store import edit_json
 from .local_settings import (
     dashboard_token,
     is_loopback_host,
@@ -363,12 +364,6 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _write_json(path: Path, data: dict) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    tmp.replace(path)
-
-
 def _iso_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -610,60 +605,56 @@ def _update_folder_task_metadata(folder: Path, context: dict[str, str],
                                  label: str) -> tuple[Path, str]:
     meta_dir = folder / ".orch"
     meta_path = meta_dir / "task.json"
-    existing = _read_json(meta_path) if meta_path.exists() else {}
-    data = existing if isinstance(existing, dict) else {}
     now = _iso_now()
     run_id = context.get("run_id", "")
-    previous_owner = str(data.get("created_by_run_id") or "")
-
-    if not previous_owner:
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    with edit_json(meta_path, create=True) as data:
+        previous_owner = str(data.get("created_by_run_id") or "")
+        if not previous_owner:
+            data.update({
+                "schema_version": 1,
+                "path": str(folder),
+                "created_at": now,
+                "created_by_run_id": run_id,
+                "created_by_run_name": context.get("run_name", ""),
+                "created_by_task": context.get("task", ""),
+                "created_by_agent": context.get("agent", ""),
+                "created_by_tmux_session": context.get("tmux_session", ""),
+                "created_by_metadata_path": context.get("metadata_path", ""),
+            })
         data.update({
             "schema_version": 1,
             "path": str(folder),
-            "created_at": now,
-            "created_by_run_id": run_id,
-            "created_by_run_name": context.get("run_name", ""),
-            "created_by_task": context.get("task", ""),
-            "created_by_agent": context.get("agent", ""),
-            "created_by_tmux_session": context.get("tmux_session", ""),
-            "created_by_metadata_path": context.get("metadata_path", ""),
+            "label": label or folder.name,
+            "last_linked_at": now,
+            "last_linked_run_id": run_id,
+            "last_linked_run_name": context.get("run_name", ""),
+            "last_linked_task": context.get("task", ""),
+            "last_linked_agent": context.get("agent", ""),
+            "last_linked_tmux_session": context.get("tmux_session", ""),
+            "last_linked_metadata_path": context.get("metadata_path", ""),
         })
-
-    data.update({
-        "schema_version": 1,
-        "path": str(folder),
-        "label": label or folder.name,
-        "last_linked_at": now,
-        "last_linked_run_id": run_id,
-        "last_linked_run_name": context.get("run_name", ""),
-        "last_linked_task": context.get("task", ""),
-        "last_linked_agent": context.get("agent", ""),
-        "last_linked_tmux_session": context.get("tmux_session", ""),
-        "last_linked_metadata_path": context.get("metadata_path", ""),
-    })
-
-    history = data.get("link_history")
-    if not isinstance(history, list):
-        history = []
-    event = {
-        "linked_at": now,
-        "run_id": run_id,
-        "run_name": context.get("run_name", ""),
-        "task": context.get("task", ""),
-        "agent": context.get("agent", ""),
-        "tmux_session": context.get("tmux_session", ""),
-        "metadata_path": context.get("metadata_path", ""),
-        "label": label or folder.name,
-    }
-    if not history or any(history[-1].get(k) != event.get(k) for k in ("run_id", "label")):
-        history.append(event)
-    data["link_history"] = history[-25:]
-
-    meta_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(meta_path, data)
+        history = data.get("link_history")
+        if not isinstance(history, list):
+            history = []
+        event = {
+            "linked_at": now,
+            "run_id": run_id,
+            "run_name": context.get("run_name", ""),
+            "task": context.get("task", ""),
+            "agent": context.get("agent", ""),
+            "tmux_session": context.get("tmux_session", ""),
+            "metadata_path": context.get("metadata_path", ""),
+            "label": label or folder.name,
+        }
+        if not history or any(
+                history[-1].get(k) != event.get(k)
+                for k in ("run_id", "label")):
+            history.append(event)
+        data["link_history"] = history[-25:]
+        owner = str(data.get("created_by_run_id") or "")
 
     warning = ""
-    owner = str(data.get("created_by_run_id") or "")
     if owner and run_id and owner != run_id:
         warning = (
             f"folder was created by run_id {owner}; "
@@ -765,16 +756,15 @@ def cmd_link_folder(args):
     folder = _resolve_linked_folder(args.folder)
     label = (args.label or folder.name).strip()
     meta_path, kind, task = _resolve_link_target(args)
-    data = _read_json(meta_path)
-    if kind == "task":
-        if task not in data or not isinstance(data[task], dict):
-            raise SystemExit(f"task '{task}' not found in {meta_path}")
-        changed = _add_linked_folder(data[task], folder, label)
-        context = _link_context(meta_path, kind, task, data[task])
-    else:
-        changed = _add_linked_folder(data, folder, label)
-        context = _link_context(meta_path, kind, task, data)
-    _write_json(meta_path, data)
+    with edit_json(meta_path) as data:
+        if kind == "task":
+            if task not in data or not isinstance(data[task], dict):
+                raise SystemExit(f"task '{task}' not found in {meta_path}")
+            changed = _add_linked_folder(data[task], folder, label)
+            context = _link_context(meta_path, kind, task, data[task])
+        else:
+            changed = _add_linked_folder(data, folder, label)
+            context = _link_context(meta_path, kind, task, data)
     task_meta_path = None
     warning = ""
     if _should_write_folder_task_metadata(folder):
@@ -794,14 +784,13 @@ def cmd_link_file(args):
     file_path = _resolve_linked_file(args.file)
     label = (args.label or file_path.name).strip()
     meta_path, kind, task = _resolve_link_target(args)
-    data = _read_json(meta_path)
-    if kind == "task":
-        if task not in data or not isinstance(data[task], dict):
-            raise SystemExit(f"task '{task}' not found in {meta_path}")
-        changed = _add_linked_file(data[task], file_path, label)
-    else:
-        changed = _add_linked_file(data, file_path, label)
-    _write_json(meta_path, data)
+    with edit_json(meta_path) as data:
+        if kind == "task":
+            if task not in data or not isinstance(data[task], dict):
+                raise SystemExit(f"task '{task}' not found in {meta_path}")
+            changed = _add_linked_file(data[task], file_path, label)
+        else:
+            changed = _add_linked_file(data, file_path, label)
     status = "linked" if changed else "already linked"
     print(f"{status}: {file_path}")
     print(f"metadata: {meta_path}")
@@ -814,14 +803,13 @@ def cmd_link_url(args):
         raise SystemExit(str(exc))
     label = (args.label or _default_linked_url_label(url)).strip()
     meta_path, kind, task = _resolve_link_target(args)
-    data = _read_json(meta_path)
-    if kind == "task":
-        if task not in data or not isinstance(data[task], dict):
-            raise SystemExit(f"task '{task}' not found in {meta_path}")
-        changed = _add_linked_url(data[task], url, label)
-    else:
-        changed = _add_linked_url(data, url, label)
-    _write_json(meta_path, data)
+    with edit_json(meta_path) as data:
+        if kind == "task":
+            if task not in data or not isinstance(data[task], dict):
+                raise SystemExit(f"task '{task}' not found in {meta_path}")
+            changed = _add_linked_url(data[task], url, label)
+        else:
+            changed = _add_linked_url(data, url, label)
     status = "linked" if changed else "already linked"
     print(f"{status}: {url}")
     print(f"metadata: {meta_path}")
