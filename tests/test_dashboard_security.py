@@ -203,6 +203,75 @@ class TerminalThemeTests(unittest.TestCase):
             b"unchanged",
         )
 
+
+class TtydRecoveryTests(unittest.TestCase):
+    def test_ensure_restarts_ttyd_when_shadow_session_is_missing(self):
+        manager = dashboard.TtydManager(enabled=False)
+        manager.enabled = True
+        old_proc = Mock()
+        old_proc.poll.return_value = None
+        new_proc = Mock()
+        manager._procs["orch-task-1"] = (old_proc, 7800, "soft-dark")
+
+        with patch.object(
+            dashboard,
+            "tmux_alive",
+            side_effect=lambda name: name == "orch-task-1",
+        ), patch.object(
+            manager, "_stop_proc"
+        ) as stop_proc, patch.object(
+            dashboard, "ensure_shadow_session",
+            return_value="orch-task-1-web",
+        ) as ensure_shadow, patch.object(
+            manager, "_next_free_port", return_value=7801,
+        ), patch.object(
+            manager, "_wait_for_port", return_value=True,
+        ), patch.object(
+            dashboard.subprocess, "Popen", return_value=new_proc,
+        ):
+            port = manager.ensure("orch-task-1", theme="soft-dark")
+
+        self.assertEqual(port, 7801)
+        stop_proc.assert_called_once_with(old_proc)
+        ensure_shadow.assert_called_once_with(
+            "orch-task-1", owner=manager._owner
+        )
+        self.assertEqual(
+            manager._procs["orch-task-1"],
+            (new_proc, 7801, "soft-dark"),
+        )
+
+    def test_port_proxy_repairs_a_missing_shadow(self):
+        manager = dashboard.TtydManager(enabled=False)
+        old_proc = Mock()
+        old_proc.poll.return_value = None
+        manager._procs["orch-task-2"] = (old_proc, 7800, "soft-green")
+
+        with patch.object(
+            dashboard, "tmux_alive", return_value=False,
+        ), patch.object(
+            manager, "_stop_proc"
+        ) as stop_proc, patch.object(
+            manager, "ensure", return_value=7802,
+        ) as ensure:
+            port = manager.port_for("orch-task-2")
+
+        self.assertEqual(port, 7802)
+        stop_proc.assert_called_once_with(old_proc)
+        ensure.assert_called_once_with("orch-task-2", theme="soft-green")
+
+    def test_old_manager_cannot_kill_a_new_managers_shadow(self):
+        with patch.object(
+            dashboard, "_shadow_owner", return_value="new-owner",
+        ), patch.object(dashboard.subprocess, "run") as run:
+            killed = dashboard.kill_shadow_session(
+                "orch-task-3", owner="old-owner"
+            )
+
+        self.assertFalse(killed)
+        run.assert_not_called()
+
+
 class DashboardAuthenticationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

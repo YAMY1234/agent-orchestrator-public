@@ -5189,7 +5189,7 @@ def shadow_name(session: str) -> str:
 
 
 def ensure_shadow_session(session: str, cols: int = 0,
-                          rows: int = 0) -> Optional[str]:
+                          rows: int = 0, owner: str = "") -> Optional[str]:
     """Ensure a grouped shadow session exists for `session` and return its name.
 
     The shadow is a grouped session (`tmux new-session -t <group>`) sharing
@@ -5252,6 +5252,12 @@ def ensure_shadow_session(session: str, cols: int = 0,
             ["tmux", "set-option", "-t", shadow, opt, val],
             capture_output=True, text=True, timeout=5,
         )
+    if owner:
+        subprocess.run(
+            ["tmux", "set-option", "-t", shadow,
+             "@orch-ttyd-owner", owner],
+            capture_output=True, text=True, timeout=5,
+        )
     # NOTE: window-size is a *window* option and grouped sessions share
     # their windows, so setting it on the shadow also affects how the
     # iTerm-side original draws. See docstring caveat for alternatives.
@@ -5266,13 +5272,31 @@ def ensure_shadow_session(session: str, cols: int = 0,
     return shadow
 
 
-def kill_shadow_session(session: str) -> None:
+def _shadow_owner(session: str) -> str:
     shadow = shadow_name(session)
     try:
-        subprocess.run(["tmux", "kill-session", "-t", shadow],
-                       capture_output=True, text=True, timeout=3)
+        result = subprocess.run(
+            ["tmux", "show-option", "-v", "-t", shadow,
+             "@orch-ttyd-owner"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
     except (subprocess.SubprocessError, FileNotFoundError):
-        pass
+        return ""
+
+
+def kill_shadow_session(session: str, *, owner: str = "") -> bool:
+    shadow = shadow_name(session)
+    if owner and _shadow_owner(session) != owner:
+        return False
+    try:
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", shadow],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
 
 
 class TtydManager:
@@ -5283,6 +5307,7 @@ class TtydManager:
         self.reserved_ports = set(reserved_ports or set())
         self._procs: dict[str, tuple[subprocess.Popen, int, str]] = {}
         self._next_port = base_port
+        self._owner = f"{os.getpid()}-{uuid.uuid4().hex}"
         # Sweep orphan ttyd processes left behind by a previous dashboard
         # that crashed / was SIGKILLed before it could call stop_all. Without
         # this, the new dashboard's TtydManager will try to bind ports
@@ -5392,13 +5417,15 @@ class TtydManager:
         existing = self._procs.get(session)
         if existing:
             proc, port, existing_theme = existing
-            if proc.poll() is None and existing_theme == theme:
+            shadow_alive = tmux_alive(shadow_name(session))
+            if (proc.poll() is None and existing_theme == theme
+                    and shadow_alive):
                 return port
             if proc.poll() is None:
                 self._stop_proc(proc)
             self._procs.pop(session, None)
 
-        shadow = ensure_shadow_session(session)
+        shadow = ensure_shadow_session(session, owner=self._owner)
         if not shadow:
             return None
 
@@ -5465,10 +5492,14 @@ class TtydManager:
         """
         existing = self._procs.get(session)
         if existing:
-            proc, port, _theme = existing
-            if proc.poll() is None:
+            proc, port, theme = existing
+            if (proc.poll() is None
+                    and tmux_alive(shadow_name(session))):
                 return port
+            if proc.poll() is None:
+                self._stop_proc(proc)
             self._procs.pop(session, None)
+            return self.ensure(session, theme=theme)
         return self.ensure(session)
 
     def theme_for(self, session: str) -> str:
@@ -5500,13 +5531,14 @@ class TtydManager:
         """
         reaped = 0
         for session, (proc, _, _) in list(self._procs.items()):
-            if tmux_alive(session) and proc.poll() is None:
+            if (tmux_alive(session) and proc.poll() is None
+                    and tmux_alive(shadow_name(session))):
                 continue
             try:
                 proc.terminate()
             except Exception:
                 pass
-            kill_shadow_session(session)
+            kill_shadow_session(session, owner=self._owner)
             self._procs.pop(session, None)
             reaped += 1
         return reaped
@@ -5517,7 +5549,7 @@ class TtydManager:
                 proc.terminate()
             except Exception:
                 pass
-            kill_shadow_session(session)
+            kill_shadow_session(session, owner=self._owner)
         self._procs.clear()
 
 
