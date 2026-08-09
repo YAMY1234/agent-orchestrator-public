@@ -2749,6 +2749,7 @@
 
   // ---------- Global state ----------
   let sessions = [];
+  let dashboardInstanceId = "";
   // Ordered slots: slots[i] = run_id or null. Length fixed by layout.
   let slots = JSON.parse(localStorage.getItem("orch_slots") || "[]");
   let layout = localStorage.getItem("orch_layout") || "1";
@@ -3435,6 +3436,13 @@
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const data = await api("/api/sessions");
+        const nextInstanceId = String(data.instance_id || "");
+        if (dashboardInstanceId && nextInstanceId
+            && dashboardInstanceId !== nextInstanceId) {
+          location.reload();
+          return;
+        }
+        if (nextInstanceId) dashboardInstanceId = nextInstanceId;
         sessions = data.sessions || [];
         updatePanelActivity(sessions);
         const byId = new Map(sessions.map(s => [s.run_id, s]));

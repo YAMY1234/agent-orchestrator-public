@@ -976,7 +976,8 @@ def cmd_dashboard(args):
 
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info",
-                    access_log=False, **ssl_kwargs)
+                    access_log=False, timeout_graceful_shutdown=5,
+                    **ssl_kwargs)
     finally:
         _cleanup()
 

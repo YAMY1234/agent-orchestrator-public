@@ -5653,6 +5653,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         return sorted(busy_paths)
 
     sync_status = SyncStatusService(sync_settings, busy_sync_paths)
+    dashboard_instance_id = uuid.uuid4().hex
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -5807,6 +5808,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "bind_host": bind_host,
             "port": port,
             "scheme": scheme,
+            "instance_id": dashboard_instance_id,
             "active_snapshot_autosave": {
                 "enabled": bool(app.state.active_snapshot_autosave_enabled),
                 "interval_seconds": app.state.active_snapshot_autosave_interval,
@@ -6090,7 +6092,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             ttyd.reap_dead()
         except Exception:
             pass
-        return {"sessions": _discover_runs(outputs_dir)}
+        return {
+            "sessions": _discover_runs(outputs_dir),
+            "instance_id": dashboard_instance_id,
+        }
 
     @app.get("/api/sessions/{run_id}")
     def get_session(run_id: str):

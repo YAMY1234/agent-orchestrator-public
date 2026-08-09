@@ -299,6 +299,7 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertNotIn("outputs_dir", health.json())
             self.assertEqual(health.json()["bind_host"], "127.0.0.1")
             self.assertEqual(health.json()["scheme"], "http")
+            self.assertTrue(health.json()["instance_id"])
             self.assertEqual(client.get("/api/sessions").status_code, 401)
             self.assertEqual(client.get("/tty/missing").status_code, 401)
 
@@ -306,7 +307,11 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertEqual(root.status_code, 200)
             self.assertEqual(root.cookies.get("orch_token"), "test-token")
             self.assertIn("HttpOnly", root.headers.get("set-cookie", ""))
-            self.assertEqual(client.get("/api/sessions").status_code, 200)
+            sessions = client.get("/api/sessions")
+            self.assertEqual(sessions.status_code, 200)
+            self.assertEqual(
+                sessions.json()["instance_id"], health.json()["instance_id"]
+            )
 
             schema = client.get("/openapi.json").json()
             self.assertNotIn(
