@@ -1054,6 +1054,101 @@
     width: min(96vw, 1500px); height: min(92vh, 1000px); max-width: none;
   }
   .mission-modal .modal-body { flex: 1; min-height: 0; overflow: hidden; }
+  .mission-view-switch { display: flex; gap: 6px; margin-top: 7px; }
+  .mission-view-switch button { padding: 3px 9px; font-size: 10px; }
+  .mission-view-switch button.on { color: var(--accent); border-color: var(--accent); }
+  .mission-timeline-view, .mission-board-view {
+    display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 10px;
+  }
+  .mission-timeline-view[hidden], .mission-board-view[hidden] { display: none; }
+  .mission-timeline-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .mission-timeline-toolbar input {
+    min-width: 180px; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg);
+  }
+  .mission-timeline-toolbar .spacer { flex: 1; }
+  .mission-legend { display: flex; gap: 10px; flex-wrap: wrap; color: var(--text-dim); font-size: 10px; }
+  .mission-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .mission-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .mission-legend .working { background: #2ea043; }
+  .mission-legend .waiting { background: #484f58; }
+  .mission-legend .blocked { background: #f85149; }
+  .mission-legend .needs_input { background: #d29922; }
+  .mission-legend .completed { background: #8957e5; }
+  .mission-legend .unknown {
+    background: repeating-linear-gradient(135deg, #30363d 0 3px, #161b22 3px 6px);
+  }
+  .mission-gantt-scroll {
+    flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg);
+  }
+  .mission-gantt { min-width: 940px; }
+  .mission-gantt-row {
+    display: grid; grid-template-columns: minmax(190px, 250px) minmax(540px, 1fr) 260px;
+    min-height: 49px; border-bottom: 1px solid var(--border); align-items: stretch;
+  }
+  .mission-gantt-row:last-child { border-bottom: 0; }
+  .mission-gantt-axis {
+    position: sticky; top: 0; z-index: 4; min-height: 35px; background: var(--bg-soft);
+  }
+  .mission-gantt-label, .mission-gantt-metrics {
+    min-width: 0; padding: 8px 10px; display: flex; align-items: center; gap: 7px;
+  }
+  .mission-gantt-label {
+    position: sticky; left: 0; z-index: 2; background: var(--bg);
+    border-right: 1px solid var(--border); cursor: pointer;
+  }
+  .mission-gantt-label:hover .mission-gantt-name { color: var(--accent); }
+  .mission-gantt-name {
+    min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font-weight: 650;
+  }
+  .mission-gantt-track {
+    position: relative; min-width: 0; margin: 8px 0;
+    background: repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(20% - 1px),
+      rgba(110,118,129,.22) calc(20% - 1px),
+      rgba(110,118,129,.22) 20%
+    );
+  }
+  .mission-gantt-axis .mission-gantt-track { margin: 0; }
+  .mission-axis-tick {
+    position: absolute; top: 9px; transform: translateX(-50%);
+    color: var(--text-dim); font-size: 9px; white-space: nowrap;
+  }
+  .mission-axis-tick:first-child { transform: none; }
+  .mission-axis-tick:last-child { transform: translateX(-100%); }
+  .mission-timeline-segment {
+    position: absolute; top: 3px; bottom: 3px; min-width: 2px;
+    border-radius: 3px; opacity: .92;
+  }
+  .mission-timeline-segment.working { background: #2ea043; }
+  .mission-timeline-segment.waiting { background: #484f58; }
+  .mission-timeline-segment.blocked { background: #f85149; }
+  .mission-timeline-segment.needs_input { background: #d29922; }
+  .mission-timeline-segment.completed { background: #8957e5; }
+  .mission-timeline-segment.unknown {
+    background: repeating-linear-gradient(135deg, #30363d 0 4px, #161b22 4px 8px);
+  }
+  .mission-now-line {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 1px;
+    background: var(--accent); opacity: .75;
+  }
+  .mission-gantt-metrics {
+    border-left: 1px solid var(--border); flex-direction: column;
+    align-items: flex-start; justify-content: center; gap: 3px; color: var(--text-dim);
+    font-size: 10px; line-height: 1.25;
+  }
+  .mission-gantt-metrics strong { color: var(--text); font-weight: 550; }
+  .mission-utilization {
+    width: 100%; height: 4px; border-radius: 99px; background: var(--bg-elev); overflow: hidden;
+  }
+  .mission-utilization span { display: block; height: 100%; background: var(--ok); }
+  .mission-timeline-empty { padding: 48px; color: var(--text-dim); text-align: center; }
   .mission-summary {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px;
   }
@@ -1121,6 +1216,7 @@
     .sync-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-grid { grid-template-columns: 1fr; }
+    .mission-gantt-row { grid-template-columns: 180px minmax(520px, 1fr) 220px; }
   }
   .web-modal {
     width: 82vw;
@@ -2415,11 +2511,50 @@
       <div class="modal-head">
         <div>
           <div class="modal-title">Mission Control</div>
-          <div class="sync-meta">Read-only live overview · explicit progress only · refreshes every 5 seconds</div>
+          <div class="sync-meta">Persistent activity history · refreshes every 5 seconds</div>
+          <div class="mission-view-switch">
+            <button class="on" data-mission-view="timeline">Activity timeline</button>
+            <button data-mission-view="board">Status board</button>
+          </div>
         </div>
         <button class="modal-close" id="mission-close" title="Close">×</button>
       </div>
       <div class="modal-body">
+        <div class="mission-timeline-view" id="mission-timeline-view">
+          <div class="mission-timeline-toolbar">
+            <strong>Session activity</strong>
+            <select id="mission-timeline-hours" title="Timeline observation window">
+              <option value="0.25" selected>Last 15 minutes</option>
+              <option value="1">Last hour</option>
+              <option value="6">Last 6 hours</option>
+              <option value="24">Last 24 hours</option>
+              <option value="168">Last 7 days</option>
+            </select>
+            <select id="mission-timeline-sort" title="Sort timeline rows">
+              <option value="idle">Idle longest</option>
+              <option value="active">Active longest</option>
+              <option value="utilization">Highest utilization</option>
+              <option value="priority">Priority</option>
+              <option value="name">Name</option>
+            </select>
+            <input id="mission-timeline-search" type="search" placeholder="Filter sessions…" />
+            <div class="spacer"></div>
+            <div class="mission-legend">
+              <span><i class="working"></i>Working</span>
+              <span><i class="waiting"></i>Idle</span>
+              <span><i class="blocked"></i>Blocked</span>
+              <span><i class="needs_input"></i>Needs input</span>
+              <span><i class="completed"></i>Completed</span>
+              <span><i class="unknown"></i>Not observed</span>
+            </div>
+          </div>
+          <div class="mission-gantt-scroll">
+            <div class="mission-gantt" id="mission-gantt">
+              <div class="mission-timeline-empty">Collecting activity history…</div>
+            </div>
+          </div>
+        </div>
+        <div class="mission-board-view" id="mission-board-view" hidden>
         <div class="mission-summary">
           <div class="mission-stat"><strong id="mission-active-count">0</strong><span>Active sessions</span></div>
           <div class="mission-stat working"><strong id="mission-working-count">0</strong><span>Working</span></div>
@@ -2443,6 +2578,7 @@
           </select>
         </div>
         <div class="mission-grid" id="mission-grid"></div>
+        </div>
       </div>
       <div class="modal-foot">
         <span class="sync-meta" id="mission-updated">Not loaded</span>
@@ -3180,6 +3316,137 @@
 
   // ---------- Mission Control ----------
   let missionFilter = "all";
+  let missionView = "timeline";
+  let missionTimelineData = null;
+  let missionTimelineRequest = 0;
+
+  function formatMissionDuration(seconds) {
+    let value = Math.max(0, Math.floor(Number(seconds || 0)));
+    if (value < 60) return `${value}s`;
+    const minutes = Math.floor(value / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainMinutes = minutes % 60;
+    if (hours < 24) return remainMinutes ? `${hours}h ${remainMinutes}m` : `${hours}h`;
+    const days = Math.floor(hours / 24);
+    const remainHours = hours % 24;
+    return remainHours ? `${days}d ${remainHours}h` : `${days}d`;
+  }
+
+  function formatMissionTick(epochSeconds, hours) {
+    const date = new Date(Number(epochSeconds || 0) * 1000);
+    if (Number(hours) > 24) {
+      return date.toLocaleString([], { weekday: "short", hour: "numeric" });
+    }
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  function setMissionView(view, { refresh = true } = {}) {
+    missionView = view === "board" ? "board" : "timeline";
+    $("mission-timeline-view").hidden = missionView !== "timeline";
+    $("mission-board-view").hidden = missionView !== "board";
+    document.querySelectorAll("[data-mission-view]").forEach(btn => {
+      btn.classList.toggle("on", btn.dataset.missionView === missionView);
+    });
+    if (missionView === "timeline") {
+      renderMissionTimeline();
+      if (refresh) refreshMissionTimeline();
+    } else {
+      renderMissionControl();
+    }
+  }
+
+  function renderMissionTimeline() {
+    const root = $("mission-gantt");
+    if (!root) return;
+    const data = missionTimelineData;
+    if (!data || !Array.isArray(data.sessions)) {
+      root.innerHTML = '<div class="mission-timeline-empty">Collecting activity history…</div>';
+      return;
+    }
+    const start = Number(data.window_start || 0);
+    const end = Number(data.window_end || 0);
+    const span = Math.max(1, end - start);
+    const query = String($("mission-timeline-search").value || "").trim().toLowerCase();
+    let rows = data.sessions.filter(row => {
+      if (!query) return true;
+      return [row.display_name, row.agent, row.priority, row.current_state]
+        .filter(Boolean).join(" ").toLowerCase().includes(query);
+    });
+    const priorityRank = { p0: 0, p1: 1, p2: 2, "": 3 };
+    const sort = $("mission-timeline-sort").value || "idle";
+    rows.sort((a, b) => {
+      if (sort === "name") return String(a.display_name).localeCompare(String(b.display_name));
+      if (sort === "priority") {
+        return (priorityRank[a.priority || ""] ?? 9) - (priorityRank[b.priority || ""] ?? 9)
+          || Number(b.current_streak_s || 0) - Number(a.current_streak_s || 0);
+      }
+      if (sort === "active") return Number(b.working_s || 0) - Number(a.working_s || 0);
+      if (sort === "utilization") return Number(b.utilization || 0) - Number(a.utilization || 0);
+      const aIdleNow = a.current_state === "waiting" ? Number(a.current_streak_s || 0) : -1;
+      const bIdleNow = b.current_state === "waiting" ? Number(b.current_streak_s || 0) : -1;
+      return bIdleNow - aIdleNow || Number(b.idle_s || 0) - Number(a.idle_s || 0);
+    });
+
+    const ticks = [0, .2, .4, .6, .8, 1].map(ratio => {
+      const at = start + span * ratio;
+      return `<span class="mission-axis-tick" style="left:${ratio * 100}%">${escapeHtml(formatMissionTick(at, data.hours))}</span>`;
+    }).join("");
+    const axis = `<div class="mission-gantt-row mission-gantt-axis">
+      <div class="mission-gantt-label"><strong>${rows.length} sessions</strong></div>
+      <div class="mission-gantt-track">${ticks}<span class="mission-now-line"></span></div>
+      <div class="mission-gantt-metrics"><strong>Observed activity</strong></div>
+    </div>`;
+    if (!rows.length) {
+      root.innerHTML = axis + '<div class="mission-timeline-empty">No sessions match this filter.</div>';
+      return;
+    }
+    root.innerHTML = axis + rows.map(row => {
+      const segments = (row.segments || []).map(segment => {
+        const segStart = Math.max(start, Number(segment.start || start));
+        const segEnd = Math.min(end, Number(segment.end || end));
+        if (segEnd <= segStart) return "";
+        const left = Math.max(0, Math.min(100, (segStart - start) * 100 / span));
+        const width = Math.max(0, Math.min(100 - left, (segEnd - segStart) * 100 / span));
+        const state = String(segment.state || "unknown");
+        const title = `${missionStateLabel(state)} · ${formatMissionDuration(segment.duration_s)} · ${new Date(segStart * 1000).toLocaleString()} – ${new Date(segEnd * 1000).toLocaleString()}`;
+        return `<span class="mission-timeline-segment ${escapeHtml(state)}" style="left:${left}%;width:${width}%" title="${escapeHtml(title)}"></span>`;
+      }).join("");
+      const current = missionStateLabel(row.current_state);
+      const currentDuration = formatMissionDuration(row.current_streak_s);
+      const unknown = Number(row.unknown_s || 0);
+      const completed = Number(row.completed_s || 0);
+      const display = row.display_name || row.tmux_session || row.run_id;
+      return `<div class="mission-gantt-row" data-run-id="${escapeHtml(row.run_id)}">
+        <div class="mission-gantt-label mission-timeline-open" data-run-id="${escapeHtml(row.run_id)}" title="Open ${escapeHtml(display)}">
+          <span class="mission-badge ${escapeHtml(row.current_state)}">${escapeHtml(current)}</span>
+          <span class="mission-gantt-name">${escapeHtml(display)}</span>
+          ${row.priority ? `<span class="mission-badge priority">${escapeHtml(String(row.priority).toUpperCase())}</span>` : ""}
+        </div>
+        <div class="mission-gantt-track">${segments}<span class="mission-now-line"></span></div>
+        <div class="mission-gantt-metrics">
+          <strong>Now: ${escapeHtml(current)} ${escapeHtml(currentDuration)}</strong>
+          <span>active ${escapeHtml(formatMissionDuration(row.working_s))} · idle ${escapeHtml(formatMissionDuration(row.idle_s))} · ${Number(row.utilization || 0).toFixed(0)}% active${completed ? ` · done ${escapeHtml(formatMissionDuration(completed))}` : ""}${unknown ? ` · ${escapeHtml(formatMissionDuration(unknown))} unobserved` : ""}</span>
+          <span class="mission-utilization"><span style="width:${Math.max(0, Math.min(100, Number(row.utilization || 0)))}%"></span></span>
+        </div>
+      </div>`;
+    }).join("");
+    $("mission-updated").textContent = `Activity window ${data.hours}h · sampled about every ${Number(data.sample_interval_s || 10)}s · updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  async function refreshMissionTimeline() {
+    const request = ++missionTimelineRequest;
+    const hours = Number($("mission-timeline-hours").value || 0.25);
+    try {
+      const data = await api(`/api/mission-control/timeline?hours=${encodeURIComponent(hours)}`);
+      if (request !== missionTimelineRequest) return;
+      missionTimelineData = data;
+      if (missionView === "timeline") renderMissionTimeline();
+    } catch (error) {
+      if (request !== missionTimelineRequest) return;
+      $("mission-gantt").innerHTML = `<div class="mission-timeline-empty">Timeline unavailable: ${escapeHtml(error.message)}</div>`;
+    }
+  }
 
   function missionRows() {
     return sessions.filter(s => {
@@ -3333,7 +3600,7 @@
 
   function openMissionControl() {
     $("mission-modal").hidden = false;
-    renderMissionControl();
+    setMissionView(missionView);
   }
 
   function closeMissionControl() { $("mission-modal").hidden = true; }
@@ -3344,7 +3611,11 @@
   $("mission-refresh").addEventListener("click", async event => {
     const btn = event.currentTarget;
     btn.disabled = true;
-    try { await refreshList(); renderMissionControl(); }
+    try {
+      await refreshList();
+      await refreshMissionTimeline();
+      renderMissionControl();
+    }
     finally { btn.disabled = false; }
   });
   $("mission-modal").addEventListener("click", event => {
@@ -3352,6 +3623,12 @@
   });
   $("mission-search").addEventListener("input", renderMissionControl);
   $("mission-sort").addEventListener("change", renderMissionControl);
+  $("mission-timeline-search").addEventListener("input", renderMissionTimeline);
+  $("mission-timeline-sort").addEventListener("change", renderMissionTimeline);
+  $("mission-timeline-hours").addEventListener("change", refreshMissionTimeline);
+  document.querySelectorAll("[data-mission-view]").forEach(btn => {
+    btn.addEventListener("click", () => setMissionView(btn.dataset.missionView));
+  });
   document.querySelectorAll(".mission-filter").forEach(btn => {
     btn.addEventListener("click", () => {
       missionFilter = btn.dataset.missionFilter || "all";
@@ -3365,6 +3642,17 @@
     const btn = event.target.closest(".mission-open");
     if (!btn) return;
     const runId = btn.dataset.runId;
+    if (!runId) return;
+    const slot = placeInFirstFree(runId);
+    saveSlots();
+    renderGrid();
+    closeMissionControl();
+    highlightPaneForSessionSoon(runId, { scroll: true });
+    if (slot >= 0) $("conn-status").textContent = `Opened ${runId}`;
+  });
+  $("mission-gantt").addEventListener("click", event => {
+    const target = event.target.closest(".mission-timeline-open");
+    const runId = target?.dataset.runId;
     if (!runId) return;
     const slot = placeInFirstFree(runId);
     saveSlots();
@@ -3820,7 +4108,10 @@
         if (nextInstanceId) dashboardInstanceId = nextInstanceId;
         sessions = data.sessions || [];
         updateMissionControlButton();
-        if (!$("mission-modal").hidden) renderMissionControl();
+        if (!$("mission-modal").hidden) {
+          renderMissionControl();
+          if (missionView === "timeline") refreshMissionTimeline();
+        }
         updatePanelActivity(sessions);
         const byId = new Map(sessions.map(s => [s.run_id, s]));
         for (const [id, ctrl] of paneCtrls) {

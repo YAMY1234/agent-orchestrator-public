@@ -744,6 +744,7 @@ class SyncStatusTests(unittest.TestCase):
             self.assertEqual(
                 stat.S_IMODE(remote_transcript.stat().st_mode), 0o600,
             )
+
     def test_extracts_only_explicit_progress_counter(self):
         progress = dashboard._extract_terminal_progress("""
 Starting documentation validation
@@ -771,6 +772,57 @@ Please approve the remote login
         }, {"busy": False}, progress)
         self.assertEqual(payload["state"], "blocked")
         self.assertTrue(payload["needs_attention"])
+
+    def test_activity_timeline_persists_intervals_and_marks_gaps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            outputs.mkdir()
+            run = {
+                "alive": True,
+                "tmux_session": "orch-demo",
+                "run_id": "demo::task",
+                "display_name": "Demo task",
+                "agent": "codex",
+                "background_active": False,
+                "mission_control": {
+                    "state": "waiting", "priority": "p0",
+                },
+            }
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1000.0, force=True,
+            )
+            run["mission_control"]["state"] = "working"
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1010.0, force=True,
+            )
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1020.0, force=True,
+            )
+
+            payload = dashboard._activity_timeline_payload(
+                outputs, hours=1, now=1020.0,
+            )
+            row = payload["sessions"][0]
+            self.assertEqual(row["current_state"], "working")
+            self.assertEqual(row["working_s"], 15.0)
+            self.assertEqual(row["idle_s"], 5.0)
+            self.assertEqual(row["current_streak_s"], 15.0)
+            self.assertEqual(row["utilization"], 75.0)
+
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1060.0, force=True,
+            )
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1070.0, force=True,
+            )
+            payload = dashboard._activity_timeline_payload(
+                outputs, hours=1, now=1070.0,
+            )
+            row = payload["sessions"][0]
+            self.assertGreaterEqual(row["unknown_s"], 40.0)
+            self.assertEqual(row["current_streak_s"], 10.0)
+            persisted = (outputs / ".activity_timeline.json").read_text()
+            self.assertNotIn("terminal", persisted.lower())
 
     def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:

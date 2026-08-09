@@ -176,6 +176,21 @@ _SESSION_LAST_CHANGE: dict[str, float] = {}    # tmux_session -> unix ts of last
 _SESSION_ACTIVITY_STREAK_START: dict[str, float] = {}  # tmux_session -> unix ts
 _SESSION_LAST_SUSTAINED_ACTIVE: dict[str, float] = {}  # tmux_session -> unix ts
 _SESSION_BACKGROUND_ACTIVE_START: dict[str, float] = {}  # tmux_session -> unix ts
+_DISCOVER_RUNS_LOCK = threading.RLock()
+
+# Mission Control stores compact state intervals rather than terminal text.
+# The regular sessions poll updates these intervals. A low-frequency fallback
+# sampler keeps the history moving when no browser is open.
+_ACTIVITY_TIMELINE_LOCK = threading.RLock()
+_ACTIVITY_TIMELINES: dict[str, dict[str, Any]] = {}
+_ACTIVITY_TIMELINE_LAST_WRITE: dict[str, float] = {}
+_ACTIVITY_TIMELINE_LAST_SAMPLE: dict[str, float] = {}
+_ACTIVITY_TIMELINE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_ACTIVITY_TIMELINE_WRITE_INTERVAL_SECONDS = 15.0
+_ACTIVITY_TIMELINE_GAP_SECONDS = 30.0
+_ACTIVITY_TIMELINE_STATES = {
+    "working", "waiting", "blocked", "needs_input", "completed", "unknown",
+}
 _BACKGROUND_STATUS_DURATION_RE = (
     r"\d+(?:\.\d+)?\s*(?:ms|s|m|h|d)"
     r"(?:\s+\d+(?:\.\d+)?\s*(?:ms|s|m|h|d))*"
@@ -3714,6 +3729,257 @@ def _mission_control_payload(
     }
 
 
+def _activity_timeline_path(outputs_dir: Path) -> Path:
+    return outputs_dir / ".activity_timeline.json"
+
+
+def _load_activity_timeline_unlocked(outputs_dir: Path) -> dict[str, Any]:
+    key = str(outputs_dir.resolve())
+    cached = _ACTIVITY_TIMELINES.get(key)
+    if cached is not None:
+        return cached
+    path = _activity_timeline_path(outputs_dir)
+    data: dict[str, Any] = {"version": 1, "updated_at": 0.0, "sessions": {}}
+    try:
+        loaded = json.loads(path.read_text())
+        if isinstance(loaded, dict) and isinstance(loaded.get("sessions"), dict):
+            data = loaded
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    data["version"] = 1
+    data.setdefault("updated_at", 0.0)
+    data.setdefault("sessions", {})
+    _ACTIVITY_TIMELINES[key] = data
+    _ACTIVITY_TIMELINE_LAST_WRITE[key] = float(data.get("updated_at") or 0.0)
+    _ACTIVITY_TIMELINE_LAST_SAMPLE[key] = float(data.get("updated_at") or 0.0)
+    return data
+
+
+def _persist_activity_timeline_unlocked(
+    outputs_dir: Path, data: dict[str, Any], now: float, *, force: bool = False,
+) -> None:
+    key = str(outputs_dir.resolve())
+    last_write = _ACTIVITY_TIMELINE_LAST_WRITE.get(key, 0.0)
+    if not force and now - last_write < _ACTIVITY_TIMELINE_WRITE_INTERVAL_SECONDS:
+        return
+    if not outputs_dir.exists():
+        return
+    data["updated_at"] = now
+    try:
+        write_json(_activity_timeline_path(outputs_dir), data)
+    except OSError as exc:
+        print(
+            f"WARNING: activity timeline persistence failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    _ACTIVITY_TIMELINE_LAST_WRITE[key] = now
+
+
+def _record_activity_timeline_snapshot(
+    outputs_dir: Path, runs: list[dict[str, Any]], *, now: float | None = None,
+    force: bool = False,
+) -> None:
+    """Merge one all-session observation into compact, persisted intervals."""
+    sample_ts = float(now if now is not None else time.time())
+    cutoff = sample_ts - _ACTIVITY_TIMELINE_RETENTION_SECONDS
+    key = str(outputs_dir.resolve())
+    with _ACTIVITY_TIMELINE_LOCK:
+        data = _load_activity_timeline_unlocked(outputs_dir)
+        sessions = data.setdefault("sessions", {})
+        seen: set[str] = set()
+        for run in runs:
+            if not run.get("alive"):
+                continue
+            session = str(run.get("tmux_session") or "").strip()
+            if not session:
+                continue
+            seen.add(session)
+            mission = run.get("mission_control")
+            mission = mission if isinstance(mission, dict) else {}
+            state = str(mission.get("state") or "waiting")
+            if state not in _ACTIVITY_TIMELINE_STATES:
+                state = "waiting"
+            entry = sessions.get(session)
+            if not isinstance(entry, dict):
+                entry = {"segments": []}
+                sessions[session] = entry
+            entry.update({
+                "tmux_session": session,
+                "run_id": str(run.get("run_id") or ""),
+                "display_name": str(
+                    run.get("display_name") or run.get("task") or session
+                )[:240],
+                "agent": str(run.get("agent") or "")[:80],
+                "priority": str(mission.get("priority") or "")[:16],
+                "alive": True,
+                "current_state": state,
+                "last_seen_at": sample_ts,
+            })
+            segments = entry.get("segments")
+            if not isinstance(segments, list):
+                segments = []
+                entry["segments"] = segments
+            if not segments:
+                initial_start = sample_ts
+                if state == "working" and run.get("background_active"):
+                    initial_start = max(
+                        cutoff,
+                        float(run.get("background_active_started_ts") or 0.0)
+                        or sample_ts,
+                    )
+                if initial_start > cutoff:
+                    segments.append({
+                        "state": "unknown", "start": cutoff, "end": initial_start,
+                    })
+                segments.append({
+                    "state": state, "start": initial_start, "end": sample_ts,
+                })
+            last = segments[-1] if segments and isinstance(segments[-1], dict) else None
+            last_end = float(last.get("end") or 0.0) if last else 0.0
+            if last and last_end and sample_ts - last_end > _ACTIVITY_TIMELINE_GAP_SECONDS:
+                segments.append({
+                    "state": "unknown", "start": last_end, "end": sample_ts,
+                })
+                last = None
+            if last and last.get("state") == state:
+                last["end"] = sample_ts
+            else:
+                transition_ts = sample_ts
+                if last:
+                    transition_ts = max(
+                        float(last.get("start") or sample_ts),
+                        (float(last.get("end") or sample_ts) + sample_ts) / 2,
+                    )
+                    last["end"] = transition_ts
+                segments.append({
+                    "state": state, "start": transition_ts, "end": sample_ts,
+                })
+            entry["segments"] = [
+                segment for segment in segments
+                if isinstance(segment, dict)
+                and float(segment.get("end") or 0.0) >= cutoff
+            ][-4096:]
+
+        for session, entry in sessions.items():
+            if not isinstance(entry, dict) or session in seen:
+                continue
+            entry["alive"] = False
+        for session in list(sessions):
+            entry = sessions.get(session)
+            segments = entry.get("segments", []) if isinstance(entry, dict) else []
+            if (not isinstance(segments, list) or not segments
+                    or float(segments[-1].get("end") or 0.0) < cutoff):
+                sessions.pop(session, None)
+        data["last_sample_at"] = sample_ts
+        _ACTIVITY_TIMELINE_LAST_SAMPLE[key] = sample_ts
+        _persist_activity_timeline_unlocked(
+            outputs_dir, data, sample_ts, force=force,
+        )
+
+
+def _activity_timeline_last_sample(outputs_dir: Path) -> float:
+    key = str(outputs_dir.resolve())
+    with _ACTIVITY_TIMELINE_LOCK:
+        if key not in _ACTIVITY_TIMELINE_LAST_SAMPLE:
+            _load_activity_timeline_unlocked(outputs_dir)
+        return float(_ACTIVITY_TIMELINE_LAST_SAMPLE.get(key) or 0.0)
+
+
+def _flush_activity_timeline(outputs_dir: Path) -> None:
+    with _ACTIVITY_TIMELINE_LOCK:
+        data = _load_activity_timeline_unlocked(outputs_dir)
+        _persist_activity_timeline_unlocked(
+            outputs_dir, data, time.time(), force=True,
+        )
+
+
+def _activity_timeline_payload(
+    outputs_dir: Path, *, hours: float = 6.0, now: float | None = None,
+) -> dict[str, Any]:
+    end_ts = float(now if now is not None else time.time())
+    clamped_hours = min(168.0, max(0.25, float(hours)))
+    start_ts = end_ts - clamped_hours * 3600.0
+    rows: list[dict[str, Any]] = []
+    with _ACTIVITY_TIMELINE_LOCK:
+        data = _load_activity_timeline_unlocked(outputs_dir)
+        for entry in data.get("sessions", {}).values():
+            if not isinstance(entry, dict) or not entry.get("alive"):
+                continue
+            clipped: list[dict[str, Any]] = []
+            totals: dict[str, float] = {
+                state: 0.0 for state in _ACTIVITY_TIMELINE_STATES
+            }
+            for raw in entry.get("segments", []):
+                if not isinstance(raw, dict):
+                    continue
+                state = str(raw.get("state") or "unknown")
+                if state not in _ACTIVITY_TIMELINE_STATES:
+                    state = "unknown"
+                seg_start = max(start_ts, float(raw.get("start") or 0.0))
+                seg_end = min(end_ts, float(raw.get("end") or 0.0))
+                if seg_end <= seg_start:
+                    continue
+                duration = seg_end - seg_start
+                totals[state] += duration
+                clipped.append({
+                    "state": state,
+                    "start": round(seg_start, 3),
+                    "end": round(seg_end, 3),
+                    "duration_s": round(duration, 1),
+                })
+            observed = sum(
+                value for state, value in totals.items() if state != "unknown"
+            )
+            working = totals["working"]
+            idle = totals["waiting"]
+            blocked = totals["blocked"] + totals["needs_input"]
+            utilization_base = working + idle + blocked
+            current_streak = 0.0
+            if clipped and clipped[-1]["state"] == entry.get("current_state"):
+                current_streak = max(
+                    0.0,
+                    min(end_ts, float(entry.get("last_seen_at") or end_ts))
+                    - clipped[-1]["start"],
+                )
+            rows.append({
+                "run_id": entry.get("run_id", ""),
+                "tmux_session": entry.get("tmux_session", ""),
+                "display_name": entry.get("display_name", ""),
+                "agent": entry.get("agent", ""),
+                "priority": entry.get("priority", ""),
+                "current_state": entry.get("current_state", "waiting"),
+                "current_streak_s": round(current_streak, 1),
+                "working_s": round(working, 1),
+                "idle_s": round(idle, 1),
+                "blocked_s": round(blocked, 1),
+                "completed_s": round(totals["completed"], 1),
+                "unknown_s": round(totals["unknown"], 1),
+                "observed_s": round(observed, 1),
+                "utilization": (
+                    round(working * 100.0 / utilization_base, 1)
+                    if utilization_base else 0.0
+                ),
+                "segments": clipped,
+            })
+    state_rank = {"blocked": 0, "needs_input": 1, "waiting": 2, "working": 3, "completed": 4}
+    rows.sort(key=lambda row: (
+        state_rank.get(str(row.get("current_state")), 9),
+        -float(row.get("idle_s") or 0.0),
+        str(row.get("display_name") or "").lower(),
+    ))
+    return {
+        "version": 1,
+        "hours": clamped_hours,
+        "window_start": round(start_ts, 3),
+        "window_end": round(end_ts, 3),
+        "sample_interval_s": 10.0,
+        "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
+        "sessions": rows,
+    }
+
+
 def _probe_session_activity(session: str) -> dict[str, Any]:
     """Capture one visible pane snapshot and update busy-tracking state.
 
@@ -4740,6 +5006,14 @@ def _daily_summary_html(summary: dict[str, Any]) -> str:
 
 
 def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
+    # Activity hashes and timeline intervals are shared mutable process state.
+    # Serialize discovery so the browser poll and fallback sampler cannot turn
+    # one observation into artificial state transitions.
+    with _DISCOVER_RUNS_LOCK:
+        return _discover_runs_unlocked(outputs_dir)
+
+
+def _discover_runs_unlocked(outputs_dir: Path) -> list[dict[str, Any]]:
     if not outputs_dir.exists():
         return []
     runs: list[dict[str, Any]] = []
@@ -4967,6 +5241,7 @@ def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
             r["background_active"] = bool(activity.get("background_active"))
             r["background_active_reason"] = activity.get("background_active_reason", "")
             bg_started_ts = float(activity.get("background_active_started_ts") or 0.0)
+            r["background_active_started_ts"] = bg_started_ts
             r["background_active_started_at"] = _local_iso(bg_started_ts)
             r["background_active_age_s"] = activity.get("background_active_age_s")
             now = time.time()
@@ -5007,6 +5282,7 @@ def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
             r["screen_busy"] = False
             r["background_active"] = False
             r["background_active_reason"] = ""
+            r["background_active_started_ts"] = 0.0
             r["background_active_started_at"] = ""
             r["background_active_age_s"] = None
             r["activity_last_change_at"] = ""
@@ -5029,6 +5305,8 @@ def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
             _SESSION_LAST_CHANGE.pop(dead_sess, None)
             _SESSION_ACTIVITY_STREAK_START.pop(dead_sess, None)
             _SESSION_LAST_SUSTAINED_ACTIVE.pop(dead_sess, None)
+
+    _record_activity_timeline_snapshot(outputs_dir, runs)
 
     return runs
 
@@ -6124,6 +6402,31 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             app.state.active_snapshot_autosave_thread = thread
             thread.start()
 
+        if app.state.activity_sampler_thread is None:
+            activity_stop = threading.Event()
+
+            def activity_sampler_loop():
+                while not activity_stop.wait(5.0):
+                    try:
+                        last_sample = _activity_timeline_last_sample(outputs_dir)
+                        if time.time() - last_sample >= 8.0:
+                            _discover_runs(outputs_dir)
+                    except Exception as exc:
+                        print(
+                            f"WARNING: activity timeline sample failed: {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+
+            activity_thread = threading.Thread(
+                target=activity_sampler_loop,
+                daemon=True,
+                name="orch-activity-timeline",
+            )
+            app.state.activity_sampler_stop = activity_stop
+            app.state.activity_sampler_thread = activity_thread
+            activity_thread.start()
+
         try:
             yield
         finally:
@@ -6135,6 +6438,15 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 thread.join(timeout=2)
             app.state.active_snapshot_autosave_stop = None
             app.state.active_snapshot_autosave_thread = None
+            activity_stop = app.state.activity_sampler_stop
+            activity_thread = app.state.activity_sampler_thread
+            if isinstance(activity_stop, threading.Event):
+                activity_stop.set()
+            if isinstance(activity_thread, threading.Thread):
+                activity_thread.join(timeout=3)
+            app.state.activity_sampler_stop = None
+            app.state.activity_sampler_thread = None
+            _flush_activity_timeline(outputs_dir)
             sync_status.stop()
 
     app = FastAPI(
@@ -6151,6 +6463,8 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     app.state.active_snapshot_autosave_interval = _active_snapshot_autosave_interval()
     app.state.active_snapshot_autosave_stop = None
     app.state.active_snapshot_autosave_thread = None
+    app.state.activity_sampler_stop = None
+    app.state.activity_sampler_thread = None
     app.state.sync_status = sync_status
 
     # Optional background publisher: write current URL to iCloud Drive so a
@@ -6240,6 +6554,11 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "active_snapshot_autosave": {
                 "enabled": bool(app.state.active_snapshot_autosave_enabled),
                 "interval_seconds": app.state.active_snapshot_autosave_interval,
+            },
+            "activity_timeline": {
+                "enabled": True,
+                "sample_interval_seconds": 10.0,
+                "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
             },
             "sync_status": sync_status.health_status(),
         }
@@ -6528,6 +6847,12 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 await ws.close(code=1011, reason=str(e)[:120])
             except Exception:
                 pass
+
+    @app.get("/api/mission-control/timeline")
+    def mission_control_timeline(
+        hours: float = Query(0.25, ge=0.25, le=168.0),
+    ):
+        return _activity_timeline_payload(outputs_dir, hours=hours)
 
     @app.get("/api/sessions")
     def list_sessions():
