@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -91,10 +92,17 @@ class WorkspaceTransfer:
     def remote_active_paths(self) -> list[str]:
         if not self.remote_host:
             return []
+        quoted_root = shlex.quote(self.remote_root)
+        remote_command = (
+            f"root=$(realpath -- {quoted_root} 2>/dev/null || "
+            f"printf '%s' {quoted_root}); "
+            "printf '__ORCH_ROOT__\\t%s\\n' \"$root\"; "
+            "tmux list-panes -a -F "
+            "'#{session_name}\\t#{pane_current_path}\\t#{pane_dead}'"
+        )
         command = [
             "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            self.remote_host,
-            "tmux list-panes -a -F '#{session_name}\\t#{pane_current_path}\\t#{pane_dead}'",
+            self.remote_host, remote_command,
         ]
         result = subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -103,19 +111,29 @@ class WorkspaceTransfer:
         if result.returncode:
             detail = result.stderr.strip()
             raise RuntimeError(detail or "could not inspect remote tmux sessions")
-        root = Path(self.remote_root)
+        roots = [Path(self.remote_root)]
         paths = set()
         for line in result.stdout.splitlines():
             fields = line.split("\t")
+            if len(fields) == 2 and fields[0] == "__ORCH_ROOT__":
+                resolved = fields[1].strip()
+                if resolved:
+                    roots.append(Path(resolved))
+                continue
             if len(fields) != 3:
                 continue
             session, cwd, dead = fields
             if (not session.startswith("orch-") or session.endswith("-web")
                     or dead == "1"):
                 continue
-            try:
-                rel = Path(cwd).relative_to(root).as_posix()
-            except ValueError:
+            rel = None
+            for root in roots:
+                try:
+                    rel = Path(cwd).relative_to(root).as_posix()
+                    break
+                except ValueError:
+                    continue
+            if rel is None:
                 continue
             paths.add("" if rel == "." else rel)
         return sorted(paths)

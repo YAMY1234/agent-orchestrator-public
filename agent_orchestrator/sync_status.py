@@ -521,6 +521,18 @@ def classify_records(local: dict[str, FileRecord],
     return {"counts": counts, "changes": changes}
 
 
+def _records_under_paths(records: dict[str, FileRecord],
+                         paths: Iterable[str]) -> dict[str, FileRecord]:
+    selected = tuple(dict.fromkeys(_clean_relative(path) for path in paths))
+    if not selected or "" in selected:
+        return records
+    return {
+        path: record for path, record in records.items()
+        if any(path == root or path.startswith(root + "/")
+               for root in selected)
+    }
+
+
 class _EventHandler:
     def __init__(self, service: "SyncStatusService"):
         self.service = service
@@ -559,6 +571,7 @@ class SyncStatusService:
             timeout_seconds=settings.transfer_timeout_seconds,
         )
         self._sync_request = ""
+        self._sync_paths: Optional[tuple[str, ...]] = None
         self._sync_needs_refresh = False
         self._sync_waiting_writers = False
         self._auto_sync = False
@@ -661,20 +674,33 @@ class SyncStatusService:
             self._force_full = True
         self._wake.set()
 
-    def request_sync(self, mode: str) -> None:
+    def request_sync(self, mode: str,
+                     paths: Optional[Iterable[str]] = None,
+                     scope_label: str = "") -> None:
         if mode not in {"now", "when_idle"}:
             raise ValueError("sync mode must be now or when_idle")
         if not self.store or not self.store.get_meta("baseline_initialized_at", ""):
             raise RuntimeError("initialize the sync baseline first")
+        scope_paths: Optional[tuple[str, ...]] = None
+        if paths is not None:
+            scope_paths = tuple(self._collapse_paths(
+                _clean_relative(path) for path in paths
+            ))
+            if not scope_paths or "" in scope_paths:
+                raise ValueError("scoped sync requires at least one path")
         with self._lock:
             if self._sync_request or self._sync_job.get("state") in {
                     "queued", "checking", "running", "waiting_idle"}:
                 raise RuntimeError("a workspace sync is already active")
             self._sync_request = mode
+            self._sync_paths = scope_paths
             self._sync_needs_refresh = True
             self._sync_waiting_writers = False
             self._sync_job = {
                 "state": "queued", "mode": mode, "queued_at": _utc_now(),
+                "scope": "paths" if scope_paths is not None else "workspace",
+                "scope_paths": list(scope_paths or ()),
+                "scope_label": str(scope_label or "").strip(),
             }
         self._wake.set()
 
@@ -692,6 +718,7 @@ class SyncStatusService:
             with self._lock:
                 if self._sync_job.get("automatic") and self._sync_request:
                     self._sync_request = ""
+                    self._sync_paths = None
                     self._sync_job = {"state": "idle"}
 
     def initialize_baseline(self, source: str = "remote") -> int:
@@ -717,8 +744,9 @@ class SyncStatusService:
         while not self._stop.is_set():
             with self._lock:
                 sync_request = self._sync_request
+                sync_paths = self._sync_paths
             if sync_request:
-                completed = self._execute_sync_request(sync_request)
+                completed = self._execute_sync_request(sync_request, sync_paths)
                 if not completed:
                     self._wake.wait(10)
                     self._wake.clear()
@@ -745,10 +773,7 @@ class SyncStatusService:
     def _queue_auto_sync(self) -> None:
         if not self._auto_sync or not self._auto_armed or not self.store:
             return
-        comparison = classify_records(
-            self.store.records("local"), self.store.records("remote"),
-            self.store.records("baseline"),
-        )
+        comparison = self._comparison()
         transferable = any(
             item["state"] in {"local_only", "remote_only"}
             and item.get("kind") != "git-head"
@@ -760,13 +785,17 @@ class SyncStatusService:
         if transferable:
             with self._lock:
                 self._sync_request = "when_idle"
+                self._sync_paths = None
                 self._sync_needs_refresh = True
                 self._sync_job = {
                     "state": "queued", "mode": "when_idle",
                     "queued_at": _utc_now(), "automatic": True,
+                    "scope": "workspace", "scope_paths": [],
                 }
 
-    def _execute_sync_request(self, mode: str) -> bool:
+    def _execute_sync_request(
+        self, mode: str, scope_paths: Optional[tuple[str, ...]] = None,
+    ) -> bool:
         if not self.store:
             return True
         with self._lock:
@@ -775,7 +804,10 @@ class SyncStatusService:
                 **self._sync_job, "state": "checking", "mode": mode,
             }
         if needs_refresh:
-            self._refresh(full=True)
+            if scope_paths is None:
+                self._refresh(full=True)
+            else:
+                self._refresh_scope(scope_paths)
             with self._lock:
                 self._sync_needs_refresh = False
             if self._phase != "ready":
@@ -783,16 +815,10 @@ class SyncStatusService:
                     "reason": self._last_error or "workspace refresh failed",
                 })
                 return True
-        comparison = classify_records(
-            self.store.records("local"), self.store.records("remote"),
-            self.store.records("baseline"),
-        )
+        comparison = self._comparison(scope_paths)
         agreements_accepted = self._advance_agreements(comparison)
         if agreements_accepted:
-            comparison = classify_records(
-                self.store.records("local"), self.store.records("remote"),
-                self.store.records("baseline"),
-            )
+            comparison = self._comparison(scope_paths)
         if comparison["counts"]["conflict"]:
             self._finish_sync("blocked", {
                 "reason": "resolve conflicts before syncing",
@@ -839,13 +865,16 @@ class SyncStatusService:
         try:
             result = self._transfer.execute(plan)
             attempted = set(plan.push) | set(plan.pull)
-            self._refresh(full=True)
+            if scope_paths is None:
+                self._refresh(full=True)
+            else:
+                self._refresh_scope(scope_paths)
             if self._phase != "ready":
                 raise RuntimeError(
                     self._last_error or "post-transfer verification failed"
                 )
-            local = self.store.records("local")
-            remote = self.store.records("remote")
+            local = self._records_for_paths("local", scope_paths)
+            remote = self._records_for_paths("remote", scope_paths)
             accepted = [local[path] for path in attempted
                         if path in local and _records_equal(local.get(path), remote.get(path))]
             self.store.merge("baseline", accepted)
@@ -865,6 +894,7 @@ class SyncStatusService:
                 "finished_at": _utc_now(),
             }
             self._sync_request = ""
+            self._sync_paths = None
             self._sync_needs_refresh = False
             self._sync_waiting_writers = False
             self._auto_armed = False
@@ -883,6 +913,23 @@ class SyncStatusService:
         self.store.merge("baseline", present)
         self.store.delete("baseline", absent)
         return len(agreed)
+
+    def _records_for_paths(
+        self, side: str, paths: Optional[Iterable[str]],
+    ) -> dict[str, FileRecord]:
+        assert self.store is not None
+        records = self.store.records(side)
+        selected = self.settings.paths if paths is None else tuple(paths)
+        return _records_under_paths(records, selected)
+
+    def _comparison(
+        self, paths: Optional[Iterable[str]] = None,
+    ) -> dict[str, Any]:
+        return classify_records(
+            self._records_for_paths("local", paths),
+            self._records_for_paths("remote", paths),
+            self._records_for_paths("baseline", paths),
+        )
 
     def _refresh(self, *, full: bool) -> None:
         if not self.store:
@@ -920,6 +967,44 @@ class SyncStatusService:
             self._resolve_content_matches()
             self.store.set_meta("last_scan_at", _utc_now())
             self.store.set_meta("last_scan_seconds", round(time.monotonic() - started, 3))
+            self._last_error = ""
+            self._phase = "ready"
+        except Exception as exc:
+            self._last_error = str(exc)
+            self._phase = "degraded"
+            self.store.set_meta("last_error_at", _utc_now())
+        finally:
+            with self._lock:
+                self._scanning = False
+            self._cached_status = self._build_status()
+
+    def _refresh_scope(self, paths: Iterable[str]) -> None:
+        if not self.store:
+            return
+        selected = self._collapse_paths(
+            _clean_relative(path) for path in paths
+        )
+        if not selected or "" in selected:
+            raise ValueError("scoped sync requires at least one path")
+        with self._lock:
+            if self._scanning:
+                return
+            self._scanning = True
+        started = time.monotonic()
+        try:
+            for rel in selected:
+                local = scan_paths(
+                    self.settings.local_path, (rel,), self.settings.excludes,
+                )
+                self.store.replace_prefix("local", rel, local)
+                remote = self._scan_remote_paths((rel,))
+                self.store.replace_prefix("remote", rel, remote)
+            self._resolve_content_matches(selected)
+            elapsed = round(time.monotonic() - started, 3)
+            with self._lock:
+                self._sync_job = {
+                    **self._sync_job, "scope_scan_seconds": elapsed,
+                }
             self._last_error = ""
             self._phase = "ready"
         except Exception as exc:
@@ -1009,7 +1094,9 @@ class SyncStatusService:
                     detail = "remote scan timed out"
                 raise RuntimeError(detail or f"remote scan exited {return_code}")
 
-    def _resolve_content_matches(self) -> None:
+    def _resolve_content_matches(
+        self, paths: Optional[Iterable[str]] = None,
+    ) -> None:
         """Hash only dual-sided candidates whose metadata cannot decide.
 
         Most changes are one-sided, so the normal event path never reads file
@@ -1018,9 +1105,9 @@ class SyncStatusService:
         """
         if not self.store or not self.store.get_meta("baseline_initialized_at", ""):
             return
-        local = self.store.records("local")
-        remote = self.store.records("remote")
-        baseline = self.store.records("baseline")
+        local = self._records_for_paths("local", paths)
+        remote = self._records_for_paths("remote", paths)
+        baseline = self._records_for_paths("baseline", paths)
         provisional = classify_records(local, remote, baseline)["changes"]
         candidates = []
         for item in provisional:
@@ -1075,9 +1162,9 @@ class SyncStatusService:
 
     def _build_status(self) -> dict[str, Any]:
         assert self.store is not None
-        local = self.store.records("local")
-        remote = self.store.records("remote")
-        baseline = self.store.records("baseline")
+        local = self._records_for_paths("local", None)
+        remote = self._records_for_paths("remote", None)
+        baseline = self._records_for_paths("baseline", None)
         initialized_at = self.store.get_meta("baseline_initialized_at", "")
         comparison = classify_records(local, remote, baseline) if initialized_at else {
             "counts": {

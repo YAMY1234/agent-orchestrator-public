@@ -896,6 +896,61 @@ def _normalize_linked_folders(raw: Any) -> list[dict[str, str]]:
     return out
 
 
+def _nearest_git_project(path: Path, projects_root: Path,
+                         *, is_file: bool = False) -> Optional[Path]:
+    current = path.parent if is_file else path
+    while current != projects_root and projects_root in current.parents:
+        if (current / ".git").exists():
+            return current
+        current = current.parent
+    return None
+
+
+def _session_sync_paths(run: dict[str, Any],
+                        projects_root: Path) -> list[str]:
+    """Return a minimal project scope from cwd and filesystem Linked Items."""
+    root = projects_root.expanduser().resolve()
+    candidates: list[tuple[str, str]] = []
+    cwd = str(run.get("cwd") or "").strip()
+    if cwd:
+        candidates.append((cwd, "folder"))
+    candidates.extend(
+        (str(item.get("path") or ""), str(item.get("type") or "folder"))
+        for item in _normalize_linked_folders(run.get("linked_folders"))
+        if item.get("type") != "url"
+    )
+
+    selected: set[str] = set()
+    for raw_path, item_type in candidates:
+        if not raw_path:
+            continue
+        try:
+            path = Path(raw_path).expanduser().resolve(strict=False)
+            rel = path.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not rel.parts or rel.parts[0] == "_to_delete":
+            continue
+        project = _nearest_git_project(
+            path, root, is_file=(item_type == "file")
+        )
+        target = project or path
+        try:
+            target_rel = target.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if target_rel:
+            selected.add(target_rel)
+
+    collapsed: list[str] = []
+    for path in sorted(selected, key=lambda item: (item.count("/"), item)):
+        if any(path == parent or path.startswith(parent + "/")
+               for parent in collapsed):
+            continue
+        collapsed.append(path)
+    return collapsed
+
+
 def _add_linked_path(container: dict[str, Any], path_obj: Path,
                      label: str, item_type: str) -> bool:
     path = str(path_obj)
@@ -4581,6 +4636,7 @@ def _lookup_run_light(outputs_dir: Path, run_id: str) -> Optional[dict[str, Any]
             "label": "",
             "auto_title": None,
             "display_name": task_name.replace("orch-", "", 1),
+            "cwd": tmux_get_cwd(task_name) if alive else "",
             "linked_folders": [],
             "busy": False,
         }
@@ -5802,6 +5858,62 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "queued": True, "mode": mode, "automatic_deletes": False}
+
+    def session_sync_scope(run_id: str) -> tuple[dict[str, Any], list[str]]:
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        run = _lookup_run_light(outputs_dir, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="run not found")
+        paths = _session_sync_paths(run, sync_status.settings.local_path)
+        if not paths:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "session has no project scope; link a folder/file under "
+                    "Projects or run the session from a project directory"
+                ),
+            )
+        return run, paths
+
+    @app.get("/api/sessions/{run_id}/sync-scope")
+    def get_session_sync_scope(run_id: str):
+        run, paths = session_sync_scope(run_id)
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "display_name": run.get("display_name") or run.get("task") or run_id,
+            "paths": paths,
+            "absolute_paths": [
+                str(sync_status.settings.local_path / path) for path in paths
+            ],
+            "default_mode": "when_idle",
+        }
+
+    @app.post("/api/sessions/{run_id}/sync")
+    async def run_session_sync(run_id: str, request: Request):
+        run, paths = session_sync_scope(run_id)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        mode = str(body.get("mode", "when_idle")) if isinstance(body, dict) else "when_idle"
+        label = str(run.get("display_name") or run.get("task") or run_id)
+        try:
+            sync_status.request_sync(
+                mode, paths=paths, scope_label=label,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "queued": True,
+            "mode": mode,
+            "scope": "session",
+            "scope_label": label,
+            "paths": paths,
+            "automatic_deletes": False,
+        }
 
     @app.post("/api/sync/auto")
     async def configure_workspace_auto_sync(request: Request):

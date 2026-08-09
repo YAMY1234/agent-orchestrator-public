@@ -375,6 +375,106 @@ class DashboardAuthenticationTests(unittest.TestCase):
 
 
 class SyncStatusTests(unittest.TestCase):
+    def test_session_sync_api_previews_and_queues_derived_scope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            outputs = temp / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            local = temp / "Projects"
+            remote = temp / "remote"
+            repo = local / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "src").mkdir()
+            remote.mkdir()
+            (run_dir / "session.json").write_text(json.dumps({
+                "name": "demo",
+                "cwd": str(repo / "src"),
+                "linked_folders": [],
+            }))
+            settings = sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("repo",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            )
+
+            with patch.object(
+                dashboard, "load_sync_settings", return_value=settings,
+            ):
+                app = dashboard.create_app(outputs, ttyd_enabled=False)
+            with patch.object(app.state.sync_status, "request_sync") as request_sync:
+                with TestClient(app) as client:
+                    preview = client.get("/api/sessions/demo-run::demo/sync-scope")
+                    queued = client.post(
+                        "/api/sessions/demo-run::demo/sync",
+                        json={"mode": "when_idle"},
+                    )
+
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json()["paths"], ["repo"])
+            self.assertEqual(queued.status_code, 200)
+            self.assertEqual(queued.json()["scope"], "session")
+            request_sync.assert_called_once_with(
+                "when_idle", paths=["repo"], scope_label="demo",
+            )
+
+    def test_session_sync_scope_uses_git_roots_and_linked_task_items(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "Projects"
+            repo = root / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "src").mkdir()
+            task = root / "current" / "topic"
+            task.mkdir(parents=True)
+            result = task / "result.md"
+            result.write_text("result")
+            ignored = root / "_to_delete" / "old"
+            ignored.mkdir(parents=True)
+
+            paths = dashboard._session_sync_paths({
+                "cwd": str(repo / "src"),
+                "linked_folders": [
+                    {"path": str(result), "type": "file"},
+                    {"path": str(repo / "src"), "type": "folder"},
+                    {"path": str(ignored), "type": "folder"},
+                    {"path": "https://example.com/task", "type": "url"},
+                    {"path": str(root.parent / "outside"), "type": "folder"},
+                ],
+            }, root)
+
+            self.assertEqual(paths, ["repo", "current/topic/result.md"])
+
+    def test_session_sync_scope_ignores_projects_root_without_links(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "Projects"
+            root.mkdir()
+
+            paths = dashboard._session_sync_paths({
+                "cwd": str(root), "linked_folders": [],
+            }, root)
+
+            self.assertEqual(paths, [])
+
+    def test_scoped_sync_rejects_workspace_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("tracked",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.store.set_meta("baseline_initialized_at", "now")
+                with self.assertRaisesRegex(ValueError, "at least one path"):
+                    service.request_sync("now", paths=("",))
+            finally:
+                service.stop()
+
     def test_classifies_one_sided_changes_deletions_and_conflicts(self):
         record = sync_status.FileRecord
         baseline = {
@@ -496,6 +596,93 @@ class SyncStatusTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            for root in (local, remote):
+                (root / "project").mkdir(parents=True)
+                (root / "other").mkdir(parents=True)
+                (root / "project" / "code.py").write_text("base")
+                (root / "other" / "state.json").write_text("base")
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("project", "other"),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                (local / "project" / "code.py").write_text("local update")
+                (local / "other" / "state.json").write_text("local conflict")
+                (remote / "other" / "state.json").write_text("remote conflict")
+                service.refresh_now()
+                service.request_sync(
+                    "now", paths=("project",), scope_label="Project session",
+                )
+
+                self.assertTrue(service._execute_sync_request(
+                    "now", service._sync_paths,
+                ))
+
+                self.assertEqual(
+                    (remote / "project" / "code.py").read_text(),
+                    "local update",
+                )
+                self.assertEqual(
+                    (remote / "other" / "state.json").read_text(),
+                    "remote conflict",
+                )
+                status = service.status()
+                self.assertEqual(status["sync_job"]["state"], "complete")
+                self.assertEqual(status["sync_job"]["scope"], "paths")
+                self.assertEqual(status["sync_job"]["scope_paths"], ["project"])
+                self.assertEqual(status["sync_job"]["scope_label"], "Project session")
+                self.assertEqual(status["counts"]["conflict"], 1)
+            finally:
+                service.stop()
+
+    def test_scoped_sync_tracks_a_path_outside_global_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            for root in (local, remote):
+                (root / "tracked").mkdir(parents=True)
+                (root / "tracked" / "base.txt").write_text("base")
+            service = sync_status.SyncStatusService(sync_status.SyncSettings(
+                enabled=True, local_root=str(local), remote_root=str(remote),
+                paths=("tracked",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            ))
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                (local / "session-project").mkdir()
+                scoped_file = local / "session-project" / "result.txt"
+                scoped_file.write_text("first")
+
+                for expected in ("first", "second"):
+                    scoped_file.write_text(expected)
+                    service.request_sync("now", paths=("session-project",))
+                    self.assertTrue(service._execute_sync_request(
+                        "now", service._sync_paths,
+                    ))
+                    self.assertEqual(
+                        (remote / "session-project" / "result.txt").read_text(),
+                        expected,
+                    )
+
+                status = service.status()
+                self.assertEqual(status["files"], {
+                    "local": 1, "remote": 1, "baseline": 1,
+                })
+                self.assertEqual(status["counts"]["unchanged"], 1)
+                self.assertEqual(status["counts"]["conflict"], 0)
+            finally:
+                service.stop()
+
     def test_sync_accepts_existing_agreement_as_the_new_baseline(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -567,6 +754,28 @@ class SyncStatusTests(unittest.TestCase):
 
 
 class SyncTransferTests(unittest.TestCase):
+    def test_remote_busy_paths_accept_resolved_root_alias(self):
+        transfer = sync_transfer.WorkspaceTransfer(
+            local_root=Path("/local/Projects"),
+            remote_root="/Users/demo/Documents/Projects",
+            remote_host="workdesk", excludes=(),
+        )
+        result = Mock(
+            returncode=0, stderr="",
+            stdout=(
+                "__ORCH_ROOT__\t/home/demo/Projects\n"
+                "orch-task\t/home/demo/Projects/repo/src\t0\n"
+                "orch-task-web\t/home/demo/Projects/repo\t0\n"
+                "other\t/home/demo/Projects/ignored\t0\n"
+            ),
+        )
+
+        with patch.object(sync_transfer.subprocess, "run", return_value=result) as run:
+            paths = transfer.remote_active_paths()
+
+        self.assertEqual(paths, ["repo/src"])
+        self.assertIn("realpath --", run.call_args.args[0][-1])
+
     def test_plan_skips_conflicts_deletions_git_large_and_busy_paths(self):
         changes = [
             {"path": "push.txt", "state": "local_only", "kind": "file",
