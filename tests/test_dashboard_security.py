@@ -773,6 +773,53 @@ Please approve the remote login
         self.assertEqual(payload["state"], "blocked")
         self.assertTrue(payload["needs_attention"])
 
+    def test_goal_achievement_is_not_session_completion(self):
+        progress = dashboard._extract_terminal_progress(
+            "Goal achieved (2h 15m)"
+        )
+        waiting = dashboard._mission_control_payload({
+            "started_at": "2026-08-09T08:00:00",
+            "tmux_session": "orch-demo",
+            "panel_state": "p0",
+        }, {"busy": False}, progress)
+        done = dashboard._mission_control_payload({
+            "started_at": "2026-08-09T08:00:00",
+            "tmux_session": "orch-demo",
+            "panel_state": "done",
+        }, {"busy": False}, progress)
+        self.assertEqual(progress["goal_state"], "achieved")
+        self.assertEqual(waiting["state"], "waiting")
+        self.assertEqual(done["state"], "completed")
+
+    def test_timeline_v1_completed_segments_migrate_to_waiting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            outputs.mkdir()
+            (outputs / ".activity_timeline.json").write_text(json.dumps({
+                "version": 1,
+                "updated_at": 1000.0,
+                "sessions": {
+                    "orch-demo": {
+                        "alive": True,
+                        "run_id": "demo::task",
+                        "tmux_session": "orch-demo",
+                        "display_name": "Demo",
+                        "current_state": "completed",
+                        "last_seen_at": 1020.0,
+                        "segments": [{
+                            "state": "completed", "start": 1000.0, "end": 1020.0,
+                        }],
+                    },
+                },
+            }))
+            payload = dashboard._activity_timeline_payload(
+                outputs, hours=1, now=1020.0,
+            )
+            row = payload["sessions"][0]
+            self.assertEqual(payload["version"], 2)
+            self.assertEqual(row["current_state"], "waiting")
+            self.assertEqual(row["segments"][0]["state"], "waiting")
+
     def test_activity_timeline_persists_intervals_and_marks_gaps(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             outputs = Path(temp_dir) / "outputs"

@@ -3684,7 +3684,10 @@ def _mission_control_payload(
         state = "needs_input"
     elif busy:
         state = "working"
-    elif panel_state == "done" or goal_state == "achieved":
+    # "Goal achieved" is an agent milestone, not proof that the live Session
+    # itself is finished. Only the user's explicit Done panel state is allowed
+    # to mark an active Session completed.
+    elif panel_state == "done":
         state = "completed"
     else:
         state = "waiting"
@@ -3739,14 +3742,30 @@ def _load_activity_timeline_unlocked(outputs_dir: Path) -> dict[str, Any]:
     if cached is not None:
         return cached
     path = _activity_timeline_path(outputs_dir)
-    data: dict[str, Any] = {"version": 1, "updated_at": 0.0, "sessions": {}}
+    data: dict[str, Any] = {"version": 2, "updated_at": 0.0, "sessions": {}}
     try:
         loaded = json.loads(path.read_text())
         if isinstance(loaded, dict) and isinstance(loaded.get("sessions"), dict):
             data = loaded
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
-    data["version"] = 1
+    try:
+        loaded_version = int(data.get("version") or 1)
+    except (TypeError, ValueError):
+        loaded_version = 1
+    if loaded_version < 2:
+        # Version 1 treated any visible "Goal achieved" status as completion.
+        # Reclassify those historical intervals as idle; explicit Done is the
+        # only completion signal starting with version 2.
+        for entry in data.get("sessions", {}).values():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("current_state") == "completed":
+                entry["current_state"] = "waiting"
+            for segment in entry.get("segments", []):
+                if isinstance(segment, dict) and segment.get("state") == "completed":
+                    segment["state"] = "waiting"
+    data["version"] = 2
     data.setdefault("updated_at", 0.0)
     data.setdefault("sessions", {})
     _ACTIVITY_TIMELINES[key] = data
@@ -3970,7 +3989,7 @@ def _activity_timeline_payload(
         str(row.get("display_name") or "").lower(),
     ))
     return {
-        "version": 1,
+        "version": 2,
         "hours": clamped_hours,
         "window_start": round(start_ts, 3),
         "window_end": round(end_ts, 3),
