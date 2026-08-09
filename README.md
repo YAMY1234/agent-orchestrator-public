@@ -254,9 +254,12 @@ are never applied automatically.
 For a faster handoff, each session pane has its own **Sync** action. It derives
 the smallest useful scope from that session's working directory and filesystem
 Linked Items, previews the exact projects or task artifacts, then syncs only
-that scope. A normal click waits for affected paths to become idle; Shift-click
-syncs the currently safe items immediately. The workspace-wide actions remain
-available as a fallback.
+that scope. A path is busy only when an active terminal with changing output or
+background shell work maps to the same Git project or Linked Item; a generic
+Projects-root cwd does not block unrelated work. A normal click waits for those
+affected paths to become idle, while Shift-click syncs the currently safe items
+immediately. During a queued or running sync the same button becomes **Cancel**.
+The workspace-wide actions remain available as a fallback.
 
 The comparison baseline lives outside the project tree in Agent Orchestrator's
 local state directory. Copy

@@ -837,6 +837,10 @@
     font-size: 12px; padding: 4px 8px;
   }
   .pane-input button { padding: 4px 10px; font-size: 12px; flex-shrink: 0; }
+  .pane-input .btn-sync-project.cancel-active {
+    color: var(--err);
+    border-color: var(--err);
+  }
 
   .pill {
     font-size: 10px; padding: 1px 7px; border-radius: 999px;
@@ -2530,6 +2534,35 @@
 
   // ---------- Read-only workspace sync status ----------
   let syncStatus = { enabled: false };
+  const SYNC_ACTIVE_STATES = new Set([
+    "queued", "checking", "running", "waiting_idle", "cancelling",
+  ]);
+
+  function syncJobIsActive(job) {
+    return SYNC_ACTIVE_STATES.has((job || {}).state);
+  }
+
+  function updateProjectSyncButton(button, job) {
+    if (!button) return;
+    const active = syncJobIsActive(job);
+    const ownsJob = active && job.scope_run_id
+      && button.dataset.runId === job.scope_run_id;
+    button.hidden = !syncStatus.enabled;
+    button.dataset.action = ownsJob ? "cancel" : "sync";
+    button.classList.toggle("cancel-active", !!ownsJob);
+    if (ownsJob) {
+      const cancelling = job.state === "cancelling";
+      button.textContent = cancelling ? "Cancelling…" : "Cancel";
+      button.disabled = cancelling;
+      button.title = cancelling
+        ? "Stopping the current project sync"
+        : "Cancel this session's queued or running project sync";
+      return;
+    }
+    button.textContent = "Sync";
+    button.disabled = !syncStatus.baseline_initialized || active;
+    button.title = "Sync this session's project when idle (Shift-click: sync safe items now)";
+  }
 
   function syncEscape(value) {
     return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -2548,11 +2581,11 @@
   function renderSyncStatus(status) {
     syncStatus = status || { enabled: false };
     const btn = $("btn-sync-status");
-    document.querySelectorAll(".btn-sync-project").forEach(projectButton => {
-      projectButton.hidden = !syncStatus.enabled;
-    });
     if (!syncStatus.enabled) {
       btn.hidden = true;
+      document.querySelectorAll(".btn-sync-project").forEach(button => {
+        updateProjectSyncButton(button, { state: "idle" });
+      });
       return;
     }
     btn.hidden = false;
@@ -2565,9 +2598,9 @@
     if (syncStatus.phase === "degraded" || conflicts
         || ["failed", "blocked"].includes(job.state)) btn.classList.add("err");
     else if (syncStatus.scanning || !syncStatus.baseline_initialized || remoteOnly
-        || ["queued", "checking", "running", "waiting_idle"].includes(job.state)) btn.classList.add("warn");
+        || syncJobIsActive(job)) btn.classList.add("warn");
     else btn.classList.add("ok");
-    if (["queued", "checking", "running"].includes(job.state)) btn.textContent = `sync: ${job.state}…`;
+    if (["queued", "checking", "running", "cancelling"].includes(job.state)) btn.textContent = `sync: ${job.state}…`;
     else if (job.state === "waiting_idle") btn.textContent = "sync: waiting idle";
     else if (job.state === "failed" || job.state === "blocked") btn.textContent = `sync: ${job.state}`;
     else if (syncStatus.scanning) btn.textContent = "sync: scanning…";
@@ -2607,14 +2640,19 @@
     $("sync-meta").innerHTML = parts.join(" &nbsp;·&nbsp; ");
     $("sync-baseline").hidden = !!syncStatus.baseline_initialized;
     $("sync-baseline-hint").hidden = !!syncStatus.baseline_initialized;
-    const activeJob = ["queued", "checking", "running", "waiting_idle"].includes(job.state);
+    const activeJob = syncJobIsActive(job);
     $("sync-now").disabled = !syncStatus.baseline_initialized || activeJob;
-    $("sync-when-idle").disabled = !syncStatus.baseline_initialized || activeJob;
+    $("sync-when-idle").dataset.action = activeJob ? "cancel" : "sync";
+    $("sync-when-idle").textContent = activeJob
+      ? (job.state === "cancelling" ? "Cancelling…" : "Cancel sync")
+      : "Sync when idle";
+    $("sync-when-idle").disabled = !syncStatus.baseline_initialized
+      || job.state === "cancelling";
     $("sync-auto").disabled = !syncStatus.baseline_initialized;
     $("sync-auto").textContent = `Auto sync: ${syncStatus.auto_sync ? "on" : "off"}`;
     $("sync-auto").classList.toggle("toggle-on", !!syncStatus.auto_sync);
     document.querySelectorAll(".btn-sync-project").forEach(button => {
-      button.disabled = !syncStatus.baseline_initialized || activeJob;
+      updateProjectSyncButton(button, job);
     });
 
     const list = $("sync-change-list");
@@ -2697,7 +2735,6 @@
   }
 
   async function queueSessionProjectSync(runId, button, mode = "when_idle") {
-    const original = button.textContent;
     button.disabled = true;
     button.textContent = "…";
     try {
@@ -2715,24 +2752,42 @@
       await api(`/api/sessions/${encodeURIComponent(runId)}/sync`, {
         method: "POST", body: { mode },
       });
-      button.textContent = "Queued";
       await pollSyncStatus(true);
       setTimeout(() => pollSyncStatus(true), 1500);
       setTimeout(() => pollSyncStatus(true), 5000);
     } catch (e) {
       alert("Project sync failed:\n" + e.message);
     } finally {
-      setTimeout(() => {
-        button.textContent = original;
-        const job = syncStatus.sync_job || { state: "idle" };
-        button.disabled = !syncStatus.baseline_initialized
-          || ["queued", "checking", "running", "waiting_idle"].includes(job.state);
-      }, 1200);
+      updateProjectSyncButton(
+        button, syncStatus.sync_job || { state: "idle" }
+      );
+    }
+  }
+
+  async function cancelWorkspaceSync(button) {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Cancelling…";
+    }
+    try {
+      await api("/api/sync/cancel", { method: "POST" });
+      await pollSyncStatus(true);
+      setTimeout(() => pollSyncStatus(true), 500);
+      setTimeout(() => pollSyncStatus(true), 2000);
+    } catch (e) {
+      alert("Cancel sync failed:\n" + e.message);
+      await pollSyncStatus(true);
     }
   }
 
   $("sync-now").addEventListener("click", () => queueWorkspaceSync("now"));
-  $("sync-when-idle").addEventListener("click", () => queueWorkspaceSync("when_idle"));
+  $("sync-when-idle").addEventListener("click", event => {
+    if (event.currentTarget.dataset.action === "cancel") {
+      cancelWorkspaceSync(event.currentTarget);
+    } else {
+      queueWorkspaceSync("when_idle");
+    }
+  });
   $("sync-auto").addEventListener("click", async () => {
     const enabled = !syncStatus.auto_sync;
     if (enabled && !window.confirm(
@@ -3529,8 +3584,7 @@
     const syncButton = card.querySelector(".btn-sync-project");
     if (syncButton) {
       const job = syncStatus.sync_job || { state: "idle" };
-      syncButton.disabled = !syncStatus.baseline_initialized
-        || ["queued", "checking", "running", "waiting_idle"].includes(job.state);
+      updateProjectSyncButton(syncButton, job);
     }
     const stateSelect = card.querySelector(".pane-state-select");
     if (stateSelect) stateSelect.disabled = !["task", "run"].includes(s.kind);
@@ -4508,11 +4562,10 @@
     btnProgress.disabled = disable;
     btnMonitor.disabled = disable;
     btnLinkFolder.disabled = disable;
-    btnSyncProject.hidden = !syncStatus.enabled;
-    btnSyncProject.disabled = !syncStatus.baseline_initialized
-      || ["queued", "checking", "running", "waiting_idle"].includes(
-        (syncStatus.sync_job || {}).state
-      );
+    btnSyncProject.dataset.runId = runId;
+    updateProjectSyncButton(
+      btnSyncProject, syncStatus.sync_job || { state: "idle" }
+    );
     btnKill.disabled = disable;
     stateSelect.disabled = !["task", "run"].includes(s.kind);
     themeSelect.disabled = !["task", "run"].includes(s.kind);
@@ -4643,9 +4696,13 @@
       sendText(runId, `请把当前 task、相关 project 或网页绑定到 Dashboard Files。\n项目目录可以直接用 \`orch link-folder ${root}/<project>\`；task 产出仍按 projects-dir-layout 放到 \`${root}/current/...\`。\n目录用 \`orch link-folder <absolute-folder-path>\`，单文件用 \`orch link-file <absolute-file-path>\`，网页用 \`orch link-url <https-url>\`；完成后告诉我绑定的 absolute path 或 URL。`, true);
     });
     btnSyncProject.addEventListener("click", event => {
-      queueSessionProjectSync(
-        runId, btnSyncProject, event.shiftKey ? "now" : "when_idle"
-      );
+      if (btnSyncProject.dataset.action === "cancel") {
+        cancelWorkspaceSync(btnSyncProject);
+      } else {
+        queueSessionProjectSync(
+          runId, btnSyncProject, event.shiftKey ? "now" : "when_idle"
+        );
+      }
     });
     stateSelect.addEventListener("change", () => setPanelState(runId, stateSelect.value, stateSelect));
     themeSelect.addEventListener("change", () => setTerminalTheme(runId, themeSelect.value, themeSelect));

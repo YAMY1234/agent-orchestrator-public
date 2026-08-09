@@ -232,8 +232,11 @@ idle** 会等受影响的本机与远端 agent workspace 都空闲后再执行�
 
 需要快速切换机器时，每个 session pane 都有独立的 **Sync** 操作。它会根据该
 session 的工作目录和文件系统 Linked Items 推导出最小有效范围，先展示将要同步的
-project 或 task 产物，再只同步这个范围。普通点击会等待相关路径空闲；按住 Shift
-点击则立即同步当前安全的项目。全 workspace 同步仍保留作为兜底。
+project 或 task 产物，再只同步这个范围。只有终端仍在持续输出或有后台 shell 工作，
+并且映射到同一个 Git project 或 Linked Item 时，相关路径才算 busy；通用的 Projects
+根目录不会阻塞无关工作。普通点击会等待这些路径空闲；按住 Shift 点击则立即同步
+当前安全的项目。同步排队或运行期间，同一个按钮会变成 **Cancel**。全 workspace
+同步仍保留作为兜底。
 
 比较 baseline 保存在 project tree 之外的 Agent Orchestrator 本地状态目录中。复制
 [`examples/dashboard.local.json`](examples/dashboard.local.json)，选择需要跟踪的
