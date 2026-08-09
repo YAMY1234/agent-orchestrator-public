@@ -55,6 +55,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from .conversation_metrics import TranscriptMetricsCache
 from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
 from .json_store import edit_json, write_json
 from .local_settings import dashboard_token, require_dashboard_auth
@@ -122,6 +123,12 @@ for _key in (
 
 from .agent_titles import TitleCache
 _TITLE_CACHE = TitleCache(ttl_seconds=600.0)
+_CONVERSATION_METRICS = TranscriptMetricsCache()
+_CONVERSATION_METRICS_POOL = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="orch-transcript-metrics",
+)
+_CONVERSATION_METRICS_PENDING_LOCK = threading.Lock()
+_CONVERSATION_METRICS_PENDING: dict[tuple[str, str], Any] = {}
 _QUICKLOOK_PROCS: dict[str, subprocess.Popen] = {}
 
 
@@ -2957,6 +2964,41 @@ def _claude_transcript_path(resume_id: str, cwd: str = "") -> Path | None:
     return matches[-1] if matches else None
 
 
+def _conversation_transcript_path(run: dict[str, Any]) -> Path | None:
+    resume = run.get("resume") if isinstance(run.get("resume"), dict) else {}
+    agent = _norm_agent(resume.get("agent") or run.get("agent") or "")
+    resume_id = str(resume.get("id") or run.get("resume_id") or "").strip()
+    source_path = str(
+        resume.get("source_path") or run.get("resume_source_path") or ""
+    )
+    source = _resume_source_transcript_path(source_path)
+    if source:
+        return source
+    cwd = str(run.get("cwd") or "")
+    started_at = str(run.get("started_at") or "")
+    if agent == "claude":
+        return _claude_transcript_path(resume_id, cwd)
+    if agent == "codex":
+        path = _codex_transcript_path(resume_id, started_at)
+        if path:
+            return path
+        if not resume_id:
+            return None
+        root = Path.home() / ".codex" / "sessions"
+        try:
+            matches = sorted(root.glob(f"*/*/*/*{resume_id}*.jsonl"))
+        except OSError:
+            return None
+        return matches[-1] if matches else None
+    if agent == "cursor" and resume_id:
+        root = Path.home() / ".cursor" / "projects"
+        for slug in _cursor_project_slugs(cwd):
+            candidate = root / slug / "agent-transcripts" / resume_id / f"{resume_id}.jsonl"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def _claude_transcript_model_effort(
     resume_id: str,
     *,
@@ -3824,6 +3866,7 @@ def _record_activity_timeline_snapshot(
             if not isinstance(entry, dict):
                 entry = {"segments": []}
                 sessions[session] = entry
+            resume = run.get("resume") if isinstance(run.get("resume"), dict) else {}
             entry.update({
                 "tmux_session": session,
                 "run_id": str(run.get("run_id") or ""),
@@ -3831,6 +3874,13 @@ def _record_activity_timeline_snapshot(
                     run.get("display_name") or run.get("task") or session
                 )[:240],
                 "agent": str(run.get("agent") or "")[:80],
+                "cwd": str(run.get("cwd") or ""),
+                "started_at": str(run.get("started_at") or ""),
+                "resume_id": str(resume.get("id") or run.get("resume_id") or ""),
+                "resume_agent": str(resume.get("agent") or run.get("agent") or ""),
+                "resume_source_path": str(
+                    resume.get("source_path") or run.get("resume_source_path") or ""
+                ),
                 "priority": str(mission.get("priority") or "")[:16],
                 "alive": True,
                 "current_state": state,
@@ -3997,6 +4047,85 @@ def _activity_timeline_payload(
         "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
         "sessions": rows,
     }
+
+
+def _conversation_metrics_snapshot(
+    path: Path, agent: str, *, window_start: float, window_end: float,
+) -> dict[str, Any]:
+    agent = str(agent or "").lower()
+    if _CONVERSATION_METRICS.is_ready(path, agent):
+        return _CONVERSATION_METRICS.snapshot(
+            path, agent, window_start=window_start, window_end=window_end,
+        )
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return {"available": False}
+    # Small transcripts can be parsed inline. Large, long-running AgentX
+    # conversations are warmed in the background so opening Mission Control
+    # never blocks for ten seconds on hundreds of megabytes of JSONL.
+    if size <= 2 * 1024 * 1024:
+        return _CONVERSATION_METRICS.snapshot(
+            path, agent, window_start=window_start, window_end=window_end,
+        )
+    key = (str(path), agent)
+    with _CONVERSATION_METRICS_PENDING_LOCK:
+        future = _CONVERSATION_METRICS_PENDING.get(key)
+        if future is not None and future.done():
+            _CONVERSATION_METRICS_PENDING.pop(key, None)
+            future = None
+        if future is None:
+            _CONVERSATION_METRICS_PENDING[key] = _CONVERSATION_METRICS_POOL.submit(
+                _CONVERSATION_METRICS.snapshot,
+                path,
+                agent,
+                window_start=window_start,
+                window_end=window_end,
+            )
+    return {"available": False, "loading": True}
+
+
+def _attach_conversation_metrics(
+    outputs_dir: Path, payload: dict[str, Any],
+) -> dict[str, Any]:
+    rows = payload.get("sessions")
+    if not isinstance(rows, list) or not rows:
+        return payload
+    with _ACTIVITY_TIMELINE_LOCK:
+        data = _load_activity_timeline_unlocked(outputs_dir)
+        source_by_session = {
+            str(session): dict(entry)
+            for session, entry in data.get("sessions", {}).items()
+            if isinstance(entry, dict)
+        }
+    window_start = float(payload.get("window_start") or 0.0)
+    window_end = float(payload.get("window_end") or time.time())
+
+    def collect(row: dict[str, Any]) -> dict[str, Any]:
+        source = source_by_session.get(str(row.get("tmux_session") or ""), {})
+        run = {
+            "agent": source.get("resume_agent") or source.get("agent") or row.get("agent"),
+            "cwd": source.get("cwd", ""),
+            "started_at": source.get("started_at", ""),
+            "resume_id": source.get("resume_id", ""),
+            "resume_source_path": source.get("resume_source_path", ""),
+        }
+        path = _conversation_transcript_path(run)
+        if not path:
+            return {"available": False}
+        return _conversation_metrics_snapshot(
+            path,
+            str(run.get("agent") or ""),
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    workers = min(6, len(rows))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        metrics = list(pool.map(collect, rows))
+    for row, stats in zip(rows, metrics):
+        row["conversation_metrics"] = stats
+    return payload
 
 
 def _probe_session_activity(session: str) -> dict[str, Any]:
@@ -6871,7 +7000,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     def mission_control_timeline(
         hours: float = Query(0.25, ge=0.25, le=168.0),
     ):
-        return _activity_timeline_payload(outputs_dir, hours=hours)
+        return _attach_conversation_metrics(
+            outputs_dir,
+            _activity_timeline_payload(outputs_dir, hours=hours),
+        )
 
     @app.get("/api/sessions")
     def list_sessions():

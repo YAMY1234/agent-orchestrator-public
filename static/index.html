@@ -1077,6 +1077,9 @@
   .mission-legend .blocked { background: #f85149; }
   .mission-legend .needs_input { background: #d29922; }
   .mission-legend .completed { background: #8957e5; }
+  .mission-legend .request {
+    width: 2px; height: 11px; border-radius: 0; background: #58a6ff;
+  }
   .mission-legend .unknown {
     background: repeating-linear-gradient(135deg, #30363d 0 3px, #161b22 3px 6px);
   }
@@ -1134,6 +1137,20 @@
   .mission-timeline-segment.unknown {
     background: repeating-linear-gradient(135deg, #30363d 0 4px, #161b22 4px 8px);
   }
+  .mission-request-marker {
+    position: absolute; z-index: 4; top: 0; bottom: 0; width: 2px;
+    min-width: 2px; transform: translateX(-1px); background: #58a6ff;
+    box-shadow: 0 0 0 1px rgba(13,17,23,.55), 0 0 5px rgba(88,166,255,.9);
+  }
+  .mission-request-marker:hover { width: 4px; transform: translateX(-2px); }
+  .mission-conversation-tooltip {
+    display: none; position: absolute; z-index: 7; right: 8px; top: 50%;
+    transform: translateY(-50%); padding: 7px 9px; border-radius: 6px;
+    border: 1px solid var(--border); background: rgba(13,17,23,.96);
+    box-shadow: 0 5px 18px rgba(0,0,0,.45); color: var(--text);
+    font-size: 10px; line-height: 1.5; pointer-events: none; white-space: nowrap;
+  }
+  .mission-gantt-row:hover .mission-conversation-tooltip { display: block; }
   .mission-now-line {
     position: absolute; right: 0; top: 0; bottom: 0; width: 1px;
     background: var(--accent); opacity: .75;
@@ -2545,6 +2562,7 @@
               <span><i class="blocked"></i>Blocked</span>
               <span><i class="needs_input"></i>Needs input</span>
               <span><i class="completed"></i>Completed</span>
+              <span><i class="request"></i>User request</span>
               <span><i class="unknown"></i>Not observed</span>
             </div>
           </div>
@@ -3333,6 +3351,14 @@
     return remainHours ? `${days}d ${remainHours}h` : `${days}d`;
   }
 
+  function formatMissionCount(value) {
+    const count = Math.max(0, Number(value || 0));
+    if (count < 1000) return Math.round(count).toLocaleString();
+    return new Intl.NumberFormat([], {
+      notation: "compact", maximumFractionDigits: 1,
+    }).format(count);
+  }
+
   function formatMissionTick(epochSeconds, hours) {
     const date = new Date(Number(epochSeconds || 0) * 1000);
     if (Number(hours) > 24) {
@@ -3395,7 +3421,7 @@
     const axis = `<div class="mission-gantt-row mission-gantt-axis">
       <div class="mission-gantt-label"><strong>${rows.length} sessions</strong></div>
       <div class="mission-gantt-track">${ticks}<span class="mission-now-line"></span></div>
-      <div class="mission-gantt-metrics"><strong>Observed activity</strong></div>
+      <div class="mission-gantt-metrics"><strong>Activity &amp; conversation</strong></div>
     </div>`;
     if (!rows.length) {
       root.innerHTML = axis + '<div class="mission-timeline-empty">No sessions match this filter.</div>';
@@ -3417,16 +3443,39 @@
       const unknown = Number(row.unknown_s || 0);
       const completed = Number(row.completed_s || 0);
       const display = row.display_name || row.tmux_session || row.run_id;
-      return `<div class="mission-gantt-row" data-run-id="${escapeHtml(row.run_id)}">
+      const conversation = row.conversation_metrics || {};
+      const windowMetrics = conversation.window || {};
+      const totalMetrics = conversation.conversation || {};
+      const requestMarkers = (windowMetrics.request_events || []).map(event => {
+        const timestamp = Number(event.timestamp || 0);
+        if (!timestamp || timestamp < start || timestamp > end) return "";
+        const left = Math.max(0, Math.min(100, (timestamp - start) * 100 / span));
+        const title = `User request · ${new Date(timestamp * 1000).toLocaleString()} · ${formatMissionCount(event.characters)} characters`;
+        return `<span class="mission-request-marker" style="left:${left}%" title="${escapeHtml(title)}"></span>`;
+      }).join("");
+      const windowSummary = conversation.loading
+        ? "Loading conversation metrics…"
+        : conversation.available
+        ? `${formatMissionCount(windowMetrics.requests)} requests · ${formatMissionCount(windowMetrics.characters)} chars · ${formatMissionCount(windowMetrics.tokens)} tokens`
+        : "Conversation metrics unavailable";
+      const totalSummary = conversation.loading
+        ? "Parsing native transcript incrementally"
+        : conversation.available
+        ? `${formatMissionCount(totalMetrics.requests)} requests · ${formatMissionCount(totalMetrics.characters)} chars · ${formatMissionCount(totalMetrics.tokens)} tokens`
+        : "No native transcript matched";
+      return `<div class="mission-gantt-row" data-run-id="${escapeHtml(row.run_id)}" title="Selected window: ${escapeHtml(windowSummary)}&#10;Conversation total: ${escapeHtml(totalSummary)}">
         <div class="mission-gantt-label mission-timeline-open" data-run-id="${escapeHtml(row.run_id)}" title="Open ${escapeHtml(display)}">
           <span class="mission-badge ${escapeHtml(row.current_state)}">${escapeHtml(current)}</span>
           <span class="mission-gantt-name">${escapeHtml(display)}</span>
           ${row.priority ? `<span class="mission-badge priority">${escapeHtml(String(row.priority).toUpperCase())}</span>` : ""}
         </div>
-        <div class="mission-gantt-track">${segments}<span class="mission-now-line"></span></div>
+        <div class="mission-gantt-track">${segments}${requestMarkers}<span class="mission-now-line"></span>
+          <div class="mission-conversation-tooltip"><strong>Selected window</strong><br>${escapeHtml(windowSummary)}<br><span style="color:var(--text-dim)">Conversation total: ${escapeHtml(totalSummary)}</span></div>
+        </div>
         <div class="mission-gantt-metrics">
           <strong>Now: ${escapeHtml(current)} ${escapeHtml(currentDuration)}</strong>
           <span>active ${escapeHtml(formatMissionDuration(row.working_s))} · idle ${escapeHtml(formatMissionDuration(row.idle_s))} · ${Number(row.utilization || 0).toFixed(0)}% active${completed ? ` · done ${escapeHtml(formatMissionDuration(completed))}` : ""}${unknown ? ` · ${escapeHtml(formatMissionDuration(unknown))} unobserved` : ""}</span>
+          <span>${escapeHtml(windowSummary)}</span>
           <span class="mission-utilization"><span style="width:${Math.max(0, Math.min(100, Number(row.utilization || 0)))}%"></span></span>
         </div>
       </div>`;
