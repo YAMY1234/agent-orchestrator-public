@@ -251,6 +251,13 @@ local and remote agent workspaces to become quiet. Continuous auto sync is
 available but starts off. Conflicts, Git refs, oversized files, and deletions
 are never applied automatically.
 
+For a faster handoff, each session pane has its own **Sync** action. It derives
+the smallest useful scope from that session's working directory and filesystem
+Linked Items, previews the exact projects or task artifacts, then syncs only
+that scope. A normal click waits for affected paths to become idle; Shift-click
+syncs the currently safe items immediately. The workspace-wide actions remain
+available as a fallback.
+
 The comparison baseline lives outside the project tree in Agent Orchestrator's
 local state directory. Copy
 [`examples/dashboard.local.json`](examples/dashboard.local.json), select the

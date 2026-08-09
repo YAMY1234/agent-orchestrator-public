@@ -827,7 +827,7 @@
   .pane-input {
     border-top: 1px solid var(--border);
     padding: 6px 8px;
-    display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto auto; gap: 6px;
     background: var(--bg-soft);
     min-width: 0;
   }
@@ -2548,6 +2548,9 @@
   function renderSyncStatus(status) {
     syncStatus = status || { enabled: false };
     const btn = $("btn-sync-status");
+    document.querySelectorAll(".btn-sync-project").forEach(projectButton => {
+      projectButton.hidden = !syncStatus.enabled;
+    });
     if (!syncStatus.enabled) {
       btn.hidden = true;
       return;
@@ -2592,6 +2595,10 @@
     if (job.state && job.state !== "idle") {
       const jobPlan = job.plan || {};
       let jobText = `job: ${syncEscape(job.state)}`;
+      if (job.scope_label) jobText += ` · ${syncEscape(job.scope_label)}`;
+      if (job.scope_scan_seconds != null) {
+        jobText += ` · scan ${Number(job.scope_scan_seconds).toFixed(2)}s`;
+      }
       if (jobPlan.push || jobPlan.pull) jobText += ` (${Number(jobPlan.push || 0)}↑ ${Number(jobPlan.pull || 0)}↓)`;
       if (job.reason) jobText += ` — ${syncEscape(job.reason)}`;
       parts.push(jobText);
@@ -2606,6 +2613,9 @@
     $("sync-auto").disabled = !syncStatus.baseline_initialized;
     $("sync-auto").textContent = `Auto sync: ${syncStatus.auto_sync ? "on" : "off"}`;
     $("sync-auto").classList.toggle("toggle-on", !!syncStatus.auto_sync);
+    document.querySelectorAll(".btn-sync-project").forEach(button => {
+      button.disabled = !syncStatus.baseline_initialized || activeJob;
+    });
 
     const list = $("sync-change-list");
     const changes = syncStatus.changes || [];
@@ -2685,6 +2695,42 @@
       alert("Sync request failed:\n" + e.message);
     }
   }
+
+  async function queueSessionProjectSync(runId, button, mode = "when_idle") {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      const scope = await api(`/api/sessions/${encodeURIComponent(runId)}/sync-scope`);
+      const paths = scope.paths || [];
+      const preview = paths.slice(0, 8).map(path => `  • ${path}`).join("\n");
+      const omitted = paths.length > 8 ? `\n  • … ${paths.length - 8} more` : "";
+      const action = mode === "now"
+        ? "Sync safe one-sided changes in this project now? Busy paths will be skipped."
+        : "Sync this project when its affected paths are idle?";
+      if (!window.confirm(
+        `${action}\n\nSession: ${scope.display_name || runId}\nScope:\n${preview}${omitted}`
+        + "\n\nConflicts and deletions are never applied automatically."
+      )) return;
+      await api(`/api/sessions/${encodeURIComponent(runId)}/sync`, {
+        method: "POST", body: { mode },
+      });
+      button.textContent = "Queued";
+      await pollSyncStatus(true);
+      setTimeout(() => pollSyncStatus(true), 1500);
+      setTimeout(() => pollSyncStatus(true), 5000);
+    } catch (e) {
+      alert("Project sync failed:\n" + e.message);
+    } finally {
+      setTimeout(() => {
+        button.textContent = original;
+        const job = syncStatus.sync_job || { state: "idle" };
+        button.disabled = !syncStatus.baseline_initialized
+          || ["queued", "checking", "running", "waiting_idle"].includes(job.state);
+      }, 1200);
+    }
+  }
+
   $("sync-now").addEventListener("click", () => queueWorkspaceSync("now"));
   $("sync-when-idle").addEventListener("click", () => queueWorkspaceSync("when_idle"));
   $("sync-auto").addEventListener("click", async () => {
@@ -3472,6 +3518,12 @@
       const el = card.querySelector(sel);
       if (el) el.disabled = disable;
     });
+    const syncButton = card.querySelector(".btn-sync-project");
+    if (syncButton) {
+      const job = syncStatus.sync_job || { state: "idle" };
+      syncButton.disabled = !syncStatus.baseline_initialized
+        || ["queued", "checking", "running", "waiting_idle"].includes(job.state);
+    }
     const stateSelect = card.querySelector(".pane-state-select");
     if (stateSelect) stateSelect.disabled = !["task", "run"].includes(s.kind);
     const themeSelect = card.querySelector(".pane-theme-select");
@@ -4387,6 +4439,7 @@
         <button class="btn-progress" title="发送『现在进度如何？』">进度</button>
         <button class="btn-monitor" title="发送 5 分钟心跳监控指令">监控</button>
         <button class="btn-link-folder" title="Link a folder, file, or URL to this pane">Link</button>
+        <button class="btn-sync-project" title="Sync this session's project when idle (Shift-click: sync safe items now)">Sync</button>
       </div>
     `;
     grid.appendChild(card);
@@ -4423,6 +4476,7 @@
     const btnProgress = card.querySelector(".btn-progress");
     const btnMonitor = card.querySelector(".btn-monitor");
     const btnLinkFolder = card.querySelector(".btn-link-folder");
+    const btnSyncProject = card.querySelector(".btn-sync-project");
     const stateSelect = card.querySelector(".pane-state-select");
     const themeSelect = card.querySelector(".pane-theme-select");
     const btnZoom = card.querySelector(".btn-zoom");
@@ -4446,6 +4500,11 @@
     btnProgress.disabled = disable;
     btnMonitor.disabled = disable;
     btnLinkFolder.disabled = disable;
+    btnSyncProject.hidden = !syncStatus.enabled;
+    btnSyncProject.disabled = !syncStatus.baseline_initialized
+      || ["queued", "checking", "running", "waiting_idle"].includes(
+        (syncStatus.sync_job || {}).state
+      );
     btnKill.disabled = disable;
     stateSelect.disabled = !["task", "run"].includes(s.kind);
     themeSelect.disabled = !["task", "run"].includes(s.kind);
@@ -4574,6 +4633,11 @@
     btnLinkFolder.addEventListener("click", () => {
       const root = PROJECTS_ROOT.replace(/\/+$/, "") || "<projects-root>";
       sendText(runId, `请把当前 task、相关 project 或网页绑定到 Dashboard Files。\n项目目录可以直接用 \`orch link-folder ${root}/<project>\`；task 产出仍按 projects-dir-layout 放到 \`${root}/current/...\`。\n目录用 \`orch link-folder <absolute-folder-path>\`，单文件用 \`orch link-file <absolute-file-path>\`，网页用 \`orch link-url <https-url>\`；完成后告诉我绑定的 absolute path 或 URL。`, true);
+    });
+    btnSyncProject.addEventListener("click", event => {
+      queueSessionProjectSync(
+        runId, btnSyncProject, event.shiftKey ? "now" : "when_idle"
+      );
     });
     stateSelect.addEventListener("change", () => setPanelState(runId, stateSelect.value, stateSelect));
     themeSelect.addEventListener("change", () => setTerminalTheme(runId, themeSelect.value, themeSelect));
