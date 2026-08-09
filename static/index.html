@@ -1049,8 +1049,78 @@
   #btn-sync-status.ok { color: var(--ok); border-color: var(--ok); }
   #btn-sync-status.warn { color: var(--warn); border-color: var(--warn); }
   #btn-sync-status.err { color: var(--err); border-color: var(--err); }
+  #btn-mission-control.warn { color: var(--warn); border-color: var(--warn); }
+  .mission-modal {
+    width: min(96vw, 1500px); height: min(92vh, 1000px); max-width: none;
+  }
+  .mission-modal .modal-body { flex: 1; min-height: 0; overflow: hidden; }
+  .mission-summary {
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px;
+  }
+  .mission-stat {
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); min-width: 0;
+  }
+  .mission-stat strong { display: block; font-size: 20px; line-height: 1.2; }
+  .mission-stat span { color: var(--text-dim); font-size: 10px; }
+  .mission-stat.working strong { color: var(--ok); }
+  .mission-stat.attention strong { color: var(--warn); }
+  .mission-stat.blocked strong { color: var(--err); }
+  .mission-stat.completed strong { color: #d2a8ff; }
+  .mission-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mission-controls input {
+    flex: 1 1 260px; min-width: 160px; padding: 7px 9px;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+  }
+  .mission-filter.on { color: var(--accent); border-color: var(--accent); }
+  .mission-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    flex: 1; gap: 10px; min-height: 0; overflow: auto; padding: 1px 3px 10px 1px;
+    align-content: start;
+  }
+  .mission-card {
+    min-width: 0; padding: 12px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--bg); display: flex;
+    flex-direction: column; gap: 9px;
+  }
+  .mission-card.attention { border-color: rgba(210,153,34,.8); }
+  .mission-card.blocked { border-color: rgba(248,81,73,.9); }
+  .mission-card-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .mission-card-title {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-weight: 650;
+  }
+  .mission-badge {
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px;
+    font-size: 10px; white-space: nowrap; color: var(--text-dim);
+  }
+  .mission-badge.working { color: var(--ok); border-color: var(--ok); }
+  .mission-badge.waiting { color: var(--text-dim); }
+  .mission-badge.needs_input { color: var(--warn); border-color: var(--warn); }
+  .mission-badge.blocked { color: var(--err); border-color: var(--err); }
+  .mission-badge.completed { color: #d2a8ff; border-color: #d2a8ff; }
+  .mission-badge.priority { color: var(--accent); border-color: var(--accent); }
+  .mission-headline { min-height: 40px; color: var(--text); overflow-wrap: anywhere; }
+  .mission-progress-track {
+    height: 6px; border-radius: 999px; background: var(--bg-elev); overflow: hidden;
+  }
+  .mission-progress-bar {
+    height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--ok));
+  }
+  .mission-progress-meta, .mission-time-row, .mission-evidence {
+    color: var(--text-dim); font-size: 10px; line-height: 1.4;
+  }
+  .mission-time-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .mission-evidence {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mission-card-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+  .mission-card-foot .agent { color: var(--text-dim); font-size: 10px; flex: 1; }
+  .mission-empty { color: var(--text-dim); padding: 36px; text-align: center; grid-column: 1 / -1; }
   @media (max-width: 640px) {
     .sync-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mission-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mission-grid { grid-template-columns: 1fr; }
   }
   .web-modal {
     width: 82vw;
@@ -2340,6 +2410,49 @@
     </div>
   </div>
 
+  <div class="modal-scrim" id="mission-modal" hidden>
+    <div class="modal mission-modal">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title">Mission Control</div>
+          <div class="sync-meta">Read-only live overview · explicit progress only · refreshes every 5 seconds</div>
+        </div>
+        <button class="modal-close" id="mission-close" title="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="mission-summary">
+          <div class="mission-stat"><strong id="mission-active-count">0</strong><span>Active sessions</span></div>
+          <div class="mission-stat working"><strong id="mission-working-count">0</strong><span>Working</span></div>
+          <div class="mission-stat attention"><strong id="mission-attention-count">0</strong><span>Needs attention</span></div>
+          <div class="mission-stat blocked"><strong id="mission-blocked-count">0</strong><span>Blocked / input</span></div>
+          <div class="mission-stat"><strong id="mission-waiting-count">0</strong><span>Waiting</span></div>
+          <div class="mission-stat completed"><strong id="mission-completed-count">0</strong><span>Completed</span></div>
+        </div>
+        <div class="mission-controls">
+          <button class="mission-filter on" data-mission-filter="all">All</button>
+          <button class="mission-filter" data-mission-filter="attention">Needs attention</button>
+          <button class="mission-filter" data-mission-filter="working">Working</button>
+          <button class="mission-filter" data-mission-filter="waiting">Waiting</button>
+          <button class="mission-filter" data-mission-filter="completed">Completed</button>
+          <input id="mission-search" type="search" placeholder="Filter task, agent, project, or current step…" />
+          <select id="mission-sort" title="Sort Mission Control cards">
+            <option value="attention">Attention first</option>
+            <option value="priority">Priority</option>
+            <option value="recent">Recent activity</option>
+            <option value="name">Name</option>
+          </select>
+        </div>
+        <div class="mission-grid" id="mission-grid"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="sync-meta" id="mission-updated">Not loaded</span>
+        <div style="flex:1"></div>
+        <button class="btn-secondary" id="mission-refresh">Refresh</button>
+        <button class="btn-secondary" id="mission-close-2">Close</button>
+      </div>
+    </div>
+  </div>
+
   <main class="main">
     <div class="url-bar" id="url-bar" title="Click to copy the URL to your clipboard, then paste on your phone">
       <span class="url-label">📱</span>
@@ -2367,6 +2480,7 @@
       </div>
       <div class="spacer"></div>
       <div class="quick-actions" aria-label="Quick actions">
+        <button id="btn-mission-control" title="Monitor progress across all active sessions">mission control</button>
         <button id="btn-sync-status" title="Read-only workspace sync status" hidden>sync: …</button>
         <button id="btn-open-notes" title="Open daily report (⌘D)">daily report</button>
         <button id="btn-open-projects-browser" title="Open local Projects browser">projects</button>
@@ -3064,6 +3178,205 @@
     return `${days}d`;
   }
 
+  // ---------- Mission Control ----------
+  let missionFilter = "all";
+
+  function missionRows() {
+    return sessions.filter(s => {
+      if (!s || !s.alive) return false;
+      if (s.monitor_role === "supervisor") return false;
+      return !String(s.display_name || s.task || "").toLowerCase()
+        .startsWith("mission-control-supervisor");
+    });
+  }
+
+  function missionInfo(s) {
+    const raw = s.mission_control || {};
+    const state = raw.state || (s.busy ? "working" : "waiting");
+    return {
+      state,
+      priority: raw.priority || (["p0", "p1", "p2"].includes(s.panel_state) ? s.panel_state : ""),
+      needs_attention: raw.needs_attention === true,
+      attention_reason: raw.attention_reason || "",
+      activity_mode: raw.activity_mode || (s.busy ? "busy" : "idle"),
+      activity_age_s: Number(raw.activity_age_s || 0),
+      session_age_s: Number(raw.session_age_s || 0),
+      last_change_at: raw.last_change_at || s.activity_last_change_at || "",
+      progress: raw.progress || { headline: "No recent task output" },
+    };
+  }
+
+  function missionStateLabel(state) {
+    return ({
+      working: "Working",
+      waiting: "Waiting",
+      needs_input: "Needs input",
+      blocked: "Blocked",
+      completed: "Completed",
+    })[state] || state || "Unknown";
+  }
+
+  function updateMissionControlButton() {
+    const btn = $("btn-mission-control");
+    if (!btn) return;
+    const rows = missionRows();
+    const attention = rows.filter(s => missionInfo(s).needs_attention).length;
+    btn.textContent = attention ? `mission ${attention}!` : `mission ${rows.length}`;
+    btn.classList.toggle("warn", attention > 0);
+    btn.title = attention
+      ? `${attention} active session${attention === 1 ? " needs" : "s need"} attention`
+      : `Monitor ${rows.length} active session${rows.length === 1 ? "" : "s"}`;
+  }
+
+  function renderMissionControl() {
+    const modal = $("mission-modal");
+    if (!modal) return;
+    const all = missionRows();
+    const infos = new Map(all.map(s => [s.run_id, missionInfo(s)]));
+    const working = all.filter(s => infos.get(s.run_id).state === "working").length;
+    const attention = all.filter(s => infos.get(s.run_id).needs_attention).length;
+    const blocked = all.filter(s => ["blocked", "needs_input"].includes(infos.get(s.run_id).state)).length;
+    const waiting = all.filter(s => infos.get(s.run_id).state === "waiting").length;
+    const completed = all.filter(s => infos.get(s.run_id).state === "completed").length;
+    $("mission-active-count").textContent = String(all.length);
+    $("mission-working-count").textContent = String(working);
+    $("mission-attention-count").textContent = String(attention);
+    $("mission-blocked-count").textContent = String(blocked);
+    $("mission-waiting-count").textContent = String(waiting);
+    $("mission-completed-count").textContent = String(completed);
+
+    const query = String($("mission-search").value || "").trim().toLowerCase();
+    let rows = all.filter(s => {
+      const mc = infos.get(s.run_id);
+      if (missionFilter === "attention" && !mc.needs_attention) return false;
+      if (missionFilter === "working" && mc.state !== "working") return false;
+      if (missionFilter === "waiting" && mc.state !== "waiting") return false;
+      if (missionFilter === "completed" && mc.state !== "completed") return false;
+      if (!query) return true;
+      const p = mc.progress || {};
+      const bag = [
+        s.display_name, s.task, s.agent, s.cwd, s.panel_state,
+        p.headline, p.evidence, mc.state,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return query.split(/\s+/).every(part => bag.includes(part));
+    });
+
+    const priorityRank = { p0: 0, p1: 1, p2: 2, "": 3 };
+    const stateRank = { blocked: 0, needs_input: 1, working: 2, waiting: 3, completed: 4 };
+    const sort = $("mission-sort").value || "attention";
+    rows.sort((a, b) => {
+      const ma = infos.get(a.run_id), mb = infos.get(b.run_id);
+      if (sort === "name") {
+        return String(a.display_name || a.task).localeCompare(String(b.display_name || b.task));
+      }
+      if (sort === "recent") {
+        return parseEpochMs(mb.last_change_at) - parseEpochMs(ma.last_change_at);
+      }
+      if (sort === "priority") {
+        return (priorityRank[ma.priority] ?? 9) - (priorityRank[mb.priority] ?? 9)
+          || (stateRank[ma.state] ?? 9) - (stateRank[mb.state] ?? 9);
+      }
+      return Number(mb.needs_attention) - Number(ma.needs_attention)
+        || (priorityRank[ma.priority] ?? 9) - (priorityRank[mb.priority] ?? 9)
+        || (stateRank[ma.state] ?? 9) - (stateRank[mb.state] ?? 9)
+        || parseEpochMs(mb.last_change_at) - parseEpochMs(ma.last_change_at);
+    });
+
+    const grid = $("mission-grid");
+    if (!rows.length) {
+      grid.innerHTML = '<div class="mission-empty">No active sessions match this view.</div>';
+    } else {
+      grid.innerHTML = rows.map(s => {
+        const mc = infos.get(s.run_id);
+        const p = mc.progress || {};
+        const pct = Number(p.percent);
+        const hasPct = p.percent !== null && p.percent !== undefined && Number.isFinite(pct);
+        const counter = p.current !== null && p.current !== undefined
+          ? (p.total ? `${p.current}/${p.total}` : `${p.current}`) : "";
+        const progressText = hasPct
+          ? `${counter} · ${pct.toFixed(pct % 1 ? 1 : 0)}% · ${p.source || "explicit"}`
+          : counter
+            ? `${counter} · ${p.source || "explicit result"}`
+            : `No explicit counter · ${p.source || "rule-based status"}`;
+        const evidence = p.evidence || s.background_active_reason || mc.attention_reason || "";
+        const display = s.display_name || s.task || s.run_name || s.run_id;
+        const cardClasses = [
+          "mission-card", mc.state,
+          mc.needs_attention ? "attention" : "",
+        ].filter(Boolean).join(" ");
+        return `<article class="${cardClasses}" data-run-id="${escapeHtml(s.run_id)}">
+          <div class="mission-card-head">
+            <span class="dot ${dotClass(s)}${s.busy ? " busy" : ""}"></span>
+            <span class="mission-card-title" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
+            ${mc.priority ? `<span class="mission-badge priority">${escapeHtml(mc.priority.toUpperCase())}</span>` : ""}
+            <span class="mission-badge ${escapeHtml(mc.state)}">${escapeHtml(missionStateLabel(mc.state))}</span>
+          </div>
+          <div class="mission-headline">${escapeHtml(p.headline || "No recent task output")}</div>
+          ${hasPct ? `<div class="mission-progress-track"><div class="mission-progress-bar" style="width:${Math.max(0, Math.min(100, pct))}%"></div></div>` : ""}
+          <div class="mission-progress-meta">${escapeHtml(progressText)}</div>
+          <div class="mission-time-row">
+            <span>${escapeHtml(mc.activity_mode)} ${formatPaneDuration(mc.activity_age_s * 1000)}</span>
+            <span>session ${formatPaneDuration(mc.session_age_s * 1000)}</span>
+            ${mc.last_change_at ? `<span>updated ${escapeHtml(new Date(mc.last_change_at).toLocaleTimeString())}</span>` : ""}
+          </div>
+          ${evidence ? `<div class="mission-evidence" title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</div>` : ""}
+          <div class="mission-card-foot">
+            <span class="agent">${escapeHtml(s.agent || "agent")}${s.model ? ` · ${escapeHtml(s.model)}` : ""}</span>
+            <button class="mission-open" data-run-id="${escapeHtml(s.run_id)}">Open pane</button>
+          </div>
+        </article>`;
+      }).join("");
+    }
+    $("mission-updated").textContent = `Updated ${new Date().toLocaleTimeString()} · ${rows.length}/${all.length} shown`;
+    updateMissionControlButton();
+  }
+
+  function openMissionControl() {
+    $("mission-modal").hidden = false;
+    renderMissionControl();
+  }
+
+  function closeMissionControl() { $("mission-modal").hidden = true; }
+
+  $("btn-mission-control").addEventListener("click", openMissionControl);
+  $("mission-close").addEventListener("click", closeMissionControl);
+  $("mission-close-2").addEventListener("click", closeMissionControl);
+  $("mission-refresh").addEventListener("click", async event => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    try { await refreshList(); renderMissionControl(); }
+    finally { btn.disabled = false; }
+  });
+  $("mission-modal").addEventListener("click", event => {
+    if (event.target === $("mission-modal")) closeMissionControl();
+  });
+  $("mission-search").addEventListener("input", renderMissionControl);
+  $("mission-sort").addEventListener("change", renderMissionControl);
+  document.querySelectorAll(".mission-filter").forEach(btn => {
+    btn.addEventListener("click", () => {
+      missionFilter = btn.dataset.missionFilter || "all";
+      document.querySelectorAll(".mission-filter").forEach(node => {
+        node.classList.toggle("on", node === btn);
+      });
+      renderMissionControl();
+    });
+  });
+  $("mission-grid").addEventListener("click", event => {
+    const btn = event.target.closest(".mission-open");
+    if (!btn) return;
+    const runId = btn.dataset.runId;
+    if (!runId) return;
+    const slot = placeInFirstFree(runId);
+    saveSlots();
+    renderGrid();
+    closeMissionControl();
+    highlightPaneForSessionSoon(runId, { scroll: true });
+    if (slot >= 0) $("conn-status").textContent = `Opened ${runId}`;
+  });
+  document.addEventListener("keydown", event => {
+    if (!$("mission-modal").hidden && event.key === "Escape") closeMissionControl();
+  });
+
   function paneIdleDisplay(runId) {
     const ctrl = paneCtrls.get(runId);
     const s = sessions.find(x => x.run_id === runId) || ctrl?.session || {};
@@ -3506,6 +3819,8 @@
         }
         if (nextInstanceId) dashboardInstanceId = nextInstanceId;
         sessions = data.sessions || [];
+        updateMissionControlButton();
+        if (!$("mission-modal").hidden) renderMissionControl();
         updatePanelActivity(sessions);
         const byId = new Map(sessions.map(s => [s.run_id, s]));
         for (const [id, ctrl] of paneCtrls) {

@@ -3543,6 +3543,177 @@ def _detect_background_active(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+_MISSION_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_MISSION_EXPLICIT_PROGRESS_RE = re.compile(
+    r"(?:^|\s)\[(?P<current>\d{1,4})/(?P<total>\d{1,4})\]\s*(?P<label>.*)$"
+)
+_MISSION_TEST_PROGRESS_RE = re.compile(
+    r"\b(?P<passed>\d{1,6})\s+passed\b"
+    r"(?:.{0,60}?\b(?P<failed>\d{1,6})\s+failed\b)?",
+    re.I,
+)
+_MISSION_GOAL_RE = re.compile(
+    r"\bGoal\s+(?P<state>achieved|blocked)\b|\bPursuing\s+goal\b",
+    re.I,
+)
+_MISSION_NEEDS_INPUT_RE = re.compile(
+    r"\b(?:waiting\s+for\s+(?:your|user)\s+(?:input|approval|response)|"
+    r"approval\s+required|please\s+(?:choose|confirm|approve|authorize)|"
+    r"would\s+you\s+like\s+me\s+to|do\s+you\s+want\s+me\s+to)\b",
+    re.I,
+)
+
+
+def _mission_clean_line(raw: str) -> str:
+    line = _MISSION_ANSI_RE.sub("", raw or "")
+    line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line).strip()
+    return re.sub(r"\s+", " ", line)
+
+
+def _mission_meaningful_line(line: str) -> bool:
+    if not line or len(line) < 3:
+        return False
+    lower = line.lower()
+    if set(line) <= set("-_=─━— ·•"):
+        return False
+    return not (
+        lower.startswith(("enter 发送", "gpt-", "claude-"))
+        or "esc to interrupt" in lower
+        or "for shortcuts" in lower
+        or re.match(r"^(worked|brewed|sautéed)\s+for\b", lower)
+    )
+
+
+def _extract_terminal_progress(text: str) -> dict[str, Any]:
+    """Extract only explicit progress evidence from a terminal tail."""
+    lines = [_mission_clean_line(line) for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    meaningful = [line for line in lines if _mission_meaningful_line(line)]
+    headline = meaningful[-1][:240] if meaningful else "No recent task output"
+    progress: dict[str, Any] = {
+        "headline": headline,
+        "current": None,
+        "total": None,
+        "percent": None,
+        "source": "terminal-tail",
+        "evidence": "",
+        "goal_state": "",
+        "needs_input": False,
+    }
+    for line in reversed(lines[-120:]):
+        match = _MISSION_EXPLICIT_PROGRESS_RE.search(line)
+        if not match:
+            continue
+        current = int(match.group("current"))
+        total = int(match.group("total"))
+        if total <= 0 or current > total:
+            continue
+        label = match.group("label").strip()
+        progress.update({
+            "current": current,
+            "total": total,
+            "percent": round(current * 100 / total, 1),
+            "source": "explicit-counter",
+            "evidence": line[:240],
+            "headline": (label or line)[:240],
+        })
+        break
+    if progress["percent"] is None:
+        for line in reversed(lines[-80:]):
+            match = _MISSION_TEST_PROGRESS_RE.search(line)
+            if not match:
+                continue
+            passed = int(match.group("passed"))
+            failed = int(match.group("failed") or 0)
+            progress.update({
+                "current": passed,
+                "total": passed + failed if failed else None,
+                "percent": (
+                    round(passed * 100 / (passed + failed), 1)
+                    if failed else None
+                ),
+                "source": "test-result",
+                "evidence": line[:240],
+            })
+            break
+    for line in reversed(lines[-60:]):
+        match = _MISSION_GOAL_RE.search(line)
+        if not match:
+            continue
+        token = match.group(0).lower()
+        progress["goal_state"] = (
+            "achieved" if "achieved" in token
+            else "blocked" if "blocked" in token
+            else "pursuing"
+        )
+        if not progress["evidence"]:
+            progress["evidence"] = line[:240]
+            progress["source"] = "goal-status"
+        break
+    progress["needs_input"] = any(
+        _MISSION_NEEDS_INPUT_RE.search(line) for line in lines[-8:]
+    )
+    return progress
+
+
+def _mission_control_payload(
+    r: dict[str, Any], activity: dict[str, Any], progress: dict[str, Any],
+) -> dict[str, Any]:
+    now = time.time()
+    panel_state = str(r.get("panel_state") or "").strip().lower()
+    busy = bool(activity.get("busy"))
+    goal_state = str(progress.get("goal_state") or "")
+    if panel_state == "blocked" or goal_state == "blocked":
+        state = "blocked"
+    elif progress.get("needs_input") and not busy:
+        state = "needs_input"
+    elif busy:
+        state = "working"
+    elif panel_state == "done" or goal_state == "achieved":
+        state = "completed"
+    else:
+        state = "waiting"
+
+    started_ts = _parse_iso_epoch(str(r.get("started_at") or "")) or 0.0
+    last_sustained = _SESSION_LAST_SUSTAINED_ACTIVE.get(
+        str(r.get("tmux_session") or ""), 0.0
+    )
+    if activity.get("background_active"):
+        activity_age = float(activity.get("background_active_age_s") or 0.0)
+    elif r.get("activity_sustained_active"):
+        streak = _SESSION_ACTIVITY_STREAK_START.get(
+            str(r.get("tmux_session") or ""), 0.0
+        )
+        activity_age = max(0.0, now - streak) if streak else 0.0
+    else:
+        idle_since = last_sustained or started_ts
+        activity_age = max(0.0, now - idle_since) if idle_since else 0.0
+    session_age = max(0.0, now - started_ts) if started_ts else 0.0
+    priority = panel_state if panel_state in {"p0", "p1", "p2"} else ""
+    needs_attention = state in {"blocked", "needs_input"} or (
+        state == "waiting" and priority in {"p0", "p1"} and activity_age >= 300
+    )
+    attention_reason = ""
+    if state == "blocked":
+        attention_reason = "Blocked"
+    elif state == "needs_input":
+        attention_reason = "Waiting for your input"
+    elif needs_attention:
+        attention_reason = f"{priority.upper()} has been idle"
+    return {
+        "version": 1,
+        "state": state,
+        "priority": priority,
+        "needs_attention": needs_attention,
+        "attention_reason": attention_reason,
+        "activity_mode": "busy" if busy else "idle",
+        "activity_age_s": round(activity_age, 1),
+        "session_age_s": round(session_age, 1),
+        "last_change_at": r.get("activity_last_change_at", ""),
+        "progress": progress,
+    }
+
+
 def _probe_session_activity(session: str) -> dict[str, Any]:
     """Capture one visible pane snapshot and update busy-tracking state.
 
@@ -3560,6 +3731,7 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "background_active_reason": "",
         "background_active_started_ts": 0.0,
         "background_active_age_s": None,
+        "terminal_progress": _extract_terminal_progress(""),
     }
     if not session:
         return idle
@@ -3613,6 +3785,7 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "background_active_reason": background_reason,
         "background_active_started_ts": background_started_ts,
         "background_active_age_s": round(now - background_started_ts, 1) if background_started_ts else None,
+        "terminal_progress": _extract_terminal_progress(text),
     }
 
 
@@ -4826,6 +4999,9 @@ def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
                 round(now - sustained_ts, 1) if sustained_ts else None
             )
             r["activity_sustained_threshold_s"] = _PANEL_SORT_ACTIVE_SECONDS
+            r["mission_control"] = _mission_control_payload(
+                r, activity, activity.get("terminal_progress") or {},
+            )
         else:
             r["busy"] = False
             r["screen_busy"] = False
@@ -4841,6 +5017,7 @@ def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
             r["activity_last_sustained_at"] = ""
             r["activity_last_sustained_age_s"] = None
             r["activity_sustained_threshold_s"] = _PANEL_SORT_ACTIVE_SECONDS
+            r["mission_control"] = {}
 
     # Garbage-collect cache entries for sessions that are no longer alive,
     # so the dicts don't grow without bound across long-running dashboard

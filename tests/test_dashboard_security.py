@@ -744,6 +744,33 @@ class SyncStatusTests(unittest.TestCase):
             self.assertEqual(
                 stat.S_IMODE(remote_transcript.stat().st_mode), 0o600,
             )
+    def test_extracts_only_explicit_progress_counter(self):
+        progress = dashboard._extract_terminal_progress("""
+Starting documentation validation
+[3/8] Check internal links
+Worked for 2m 10s
+""")
+        self.assertEqual(progress["current"], 3)
+        self.assertEqual(progress["total"], 8)
+        self.assertEqual(progress["percent"], 37.5)
+        self.assertEqual(progress["headline"], "Check internal links")
+        self.assertEqual(progress["source"], "explicit-counter")
+
+    def test_marks_blocked_goal_and_conservative_input_prompt(self):
+        progress = dashboard._extract_terminal_progress("""
+Compilation completed
+Goal blocked: access approval required
+Please approve the remote login
+""")
+        self.assertEqual(progress["goal_state"], "blocked")
+        self.assertTrue(progress["needs_input"])
+        payload = dashboard._mission_control_payload({
+            "started_at": "2026-08-09T08:00:00",
+            "tmux_session": "orch-demo",
+            "panel_state": "p0",
+        }, {"busy": False}, progress)
+        self.assertEqual(payload["state"], "blocked")
+        self.assertTrue(payload["needs_attention"])
 
     def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
