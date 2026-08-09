@@ -43,6 +43,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import textwrap
 import time
@@ -58,6 +59,7 @@ from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
 from .json_store import edit_json, write_json
 from .local_settings import dashboard_token, require_dashboard_auth
 from .sync_status import SyncStatusService, load_settings as load_sync_settings
+from .sync_transfer import TransferCancelled
 from .terminal_theme import (
     normalize_terminal_theme as _normalize_terminal_theme,
     patch_ttyd_index_theme as _patch_ttyd_index_theme,
@@ -3225,6 +3227,257 @@ def _persist_resume_capture_status(
         return False
 
 
+def _handoff_component(value: str, fallback: str = "session") -> str:
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-._")
+    return (value or fallback)[:80]
+
+
+def _handoff_transcript_for_run(r: dict[str, Any]) -> tuple[str, str, Path]:
+    resume = r.get("resume") if isinstance(r.get("resume"), dict) else {}
+    agent = _norm_agent(resume.get("agent") or r.get("agent") or "")
+    resume_id = str(r.get("resume_id") or resume.get("id") or "").strip()
+    source_path = str(resume.get("source_path") or "").strip()
+    source = _resume_source_transcript_path(source_path)
+    if not source and agent == "claude":
+        source = _claude_transcript_path(resume_id, str(r.get("cwd") or ""))
+    if not source and agent == "codex":
+        source = _codex_transcript_path(
+            resume_id, str(r.get("started_at") or "")
+        )
+    if not source and agent == "codex" and resume_id:
+        root = Path.home() / ".codex" / "sessions"
+        try:
+            matches = sorted(root.rglob(f"*{resume_id}*.jsonl"))
+        except OSError:
+            matches = []
+        source = matches[-1] if matches else None
+    if not source or not source.is_file():
+        raise RuntimeError(f"{agent or 'agent'} resume transcript was not found")
+    if agent not in {"claude", "codex"}:
+        raise RuntimeError(
+            "remote handoff currently supports Claude Code and Codex sessions"
+        )
+    if not resume_id:
+        raise RuntimeError("session has no native resume id")
+    return agent, resume_id, source
+
+
+def _write_jsonl_snapshot(source: Path, target: Path) -> int:
+    """Copy a stable, newline-complete prefix of an append-only transcript."""
+    size = source.stat().st_size
+    remaining = size
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as src, target.open("w+b") as dst:
+        while remaining:
+            chunk = src.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            dst.write(chunk)
+            remaining -= len(chunk)
+        copied = dst.tell()
+        if copied:
+            dst.seek(max(0, copied - 1024 * 1024))
+            tail_start = dst.tell()
+            tail = dst.read()
+            if not tail.endswith(b"\n"):
+                newline = tail.rfind(b"\n")
+                if newline < 0:
+                    raise RuntimeError("resume transcript has no complete JSONL record")
+                copied = tail_start + newline + 1
+                dst.truncate(copied)
+    if not copied:
+        raise RuntimeError("resume transcript is empty")
+    return copied
+
+
+def _run_handoff_command(
+    command: list[str], cancel: threading.Event, *, timeout: float = 300.0,
+) -> str:
+    if cancel.is_set():
+        raise TransferCancelled("sync cancelled")
+    proc = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + timeout
+    while proc.poll() is None:
+        if cancel.wait(0.1):
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise TransferCancelled("sync cancelled")
+        if time.monotonic() >= deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"handoff command timed out after {timeout:g}s")
+    stdout, stderr = proc.communicate()
+    if proc.returncode:
+        raise RuntimeError((stderr or stdout or "handoff command failed").strip())
+    return stdout
+
+
+def _session_handoff_metadata(
+    r: dict[str, Any], *, agent: str, resume_id: str,
+    remote_transcript: str, job: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    label = str(
+        r.get("label") or r.get("display_name") or r.get("task") or "handoff"
+    )[:80]
+    task_name = f"{_handoff_component(label)}-handoff"
+    resume_cmd = _resume_cmd_for(agent, resume_id)
+    recorded_at = _iso_now()
+    meta = {
+        "name": task_name,
+        "label": label,
+        "agent": agent,
+        "model": str(r.get("model") or ""),
+        "effort": str(r.get("effort") or ""),
+        "effort_mode": str(r.get("effort_mode") or ""),
+        "cwd": str(r.get("cwd") or ""),
+        "tmux_session": "",
+        "status": "handoff-ready",
+        "started_at": str(r.get("started_at") or ""),
+        "stopped_at": recorded_at,
+        "resume_agent": agent,
+        "resume_id": resume_id,
+        "resume_cmd": resume_cmd,
+        "resume_source": "remote-session-handoff",
+        "resume_source_path": remote_transcript,
+        "resume_recorded_at": recorded_at,
+        "resume_confidence": "exact",
+        "resume": {
+            "agent": agent,
+            "id": resume_id,
+            "cmd": resume_cmd,
+            "source": "remote-session-handoff",
+            "source_path": remote_transcript,
+            "recorded_at": recorded_at,
+            "confidence": "exact",
+        },
+        "linked_folders": _normalize_linked_folders(r.get("linked_folders")),
+        "panel_state": str(r.get("panel_state") or ""),
+        "terminal_theme": _normalize_terminal_theme(
+            str(r.get("terminal_theme") or "")
+        ),
+        "handoff": {
+            "schema_version": 1,
+            "created_at": recorded_at,
+            "source_run_id": str(r.get("run_id") or ""),
+            "source_session_alive": bool(r.get("alive")),
+            "project_paths": list(job.get("scope_paths") or []),
+            "launch_policy": "manual-resume-only",
+        },
+    }
+    return task_name, meta
+
+
+def _publish_session_handoff(
+    outputs_dir: Path, settings: Any, job: dict[str, Any],
+    cancel: threading.Event,
+) -> dict[str, Any]:
+    run_id = str(job.get("scope_run_id") or "").strip()
+    if not run_id:
+        return {"state": "skipped", "reason": "workspace sync has no session"}
+    if not settings.remote_code_root:
+        return {"state": "skipped", "reason": "remote_code_root is not configured"}
+    r = _lookup_run(outputs_dir, run_id)
+    if not r:
+        raise RuntimeError("source session disappeared before handoff")
+    ok, reason = _ensure_resume_metadata_for_run(r)
+    if not ok:
+        raise RuntimeError(reason or "session has no native resume metadata")
+    agent, resume_id, source = _handoff_transcript_for_run(r)
+    safe_resume = _handoff_component(resume_id, "resume")
+    run_name = f"handoff-{agent}-{safe_resume}"
+
+    with tempfile.TemporaryDirectory(prefix="orch-handoff-") as raw_temp:
+        temp = Path(raw_temp)
+        transcript = temp / "transcript.jsonl"
+        transcript_bytes = _write_jsonl_snapshot(source, transcript)
+
+        if settings.remote_host:
+            ssh_base = [
+                "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=6",
+                settings.remote_host,
+            ]
+            remote_home = _run_handoff_command(
+                [*ssh_base, 'printf "%s" "$HOME"'], cancel, timeout=30,
+            ).strip()
+            if not remote_home.startswith("/"):
+                raise RuntimeError("could not resolve remote home directory")
+        else:
+            remote_home = str(Path(settings.remote_code_root).parent / "home")
+
+        if agent == "claude":
+            slug = (str(r.get("cwd") or "")).replace("/", "-") or "unknown"
+            transcript_rel = f".claude/projects/{slug}/{safe_resume}.jsonl"
+        else:
+            try:
+                codex_rel = source.relative_to(Path.home() / ".codex" / "sessions")
+                transcript_rel = f".codex/sessions/{codex_rel.as_posix()}"
+            except ValueError:
+                transcript_rel = f".codex/sessions/handoff/{safe_resume}.jsonl"
+        remote_transcript_path = str(PurePosixPath(remote_home) / transcript_rel)
+        remote_run_dir = str(
+            PurePosixPath(settings.remote_code_root) / "outputs" / run_name
+        )
+        task_name, metadata = _session_handoff_metadata(
+            r, agent=agent, resume_id=resume_id,
+            remote_transcript=remote_transcript_path, job=job,
+        )
+        metadata_path = temp / "session.json"
+        write_json(metadata_path, metadata)
+
+        if settings.remote_host:
+            token = uuid.uuid4().hex
+            transcript_tmp = f"{remote_transcript_path}.tmp-{token}"
+            metadata_tmp = f"{remote_run_dir}/.session.json.tmp-{token}"
+            mkdir_command = "install -d -m 700 {} {}".format(
+                shlex.quote(str(PurePosixPath(remote_transcript_path).parent)),
+                shlex.quote(remote_run_dir),
+            )
+            _run_handoff_command([*ssh_base, mkdir_command], cancel, timeout=30)
+            rsync_shell = (
+                "ssh -o BatchMode=yes -o ConnectTimeout=10 "
+                "-o ServerAliveInterval=15 -o ServerAliveCountMax=6"
+            )
+            _run_handoff_command([
+                "rsync", "-a", "--chmod=F600", "-e", rsync_shell,
+                str(transcript), f"{settings.remote_host}:{transcript_tmp}",
+            ], cancel)
+            _run_handoff_command([
+                "rsync", "-a", "--chmod=F600", "-e", rsync_shell,
+                str(metadata_path), f"{settings.remote_host}:{metadata_tmp}",
+            ], cancel)
+            publish_command = "mv -- {} {} && mv -- {} {}".format(
+                shlex.quote(transcript_tmp), shlex.quote(remote_transcript_path),
+                shlex.quote(metadata_tmp),
+                shlex.quote(f"{remote_run_dir}/session.json"),
+            )
+            _run_handoff_command([*ssh_base, publish_command], cancel, timeout=30)
+        else:
+            remote_transcript = Path(remote_transcript_path)
+            remote_metadata = Path(remote_run_dir) / "session.json"
+            remote_transcript.parent.mkdir(parents=True, exist_ok=True)
+            remote_metadata.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(transcript, remote_transcript)
+            shutil.copyfile(metadata_path, remote_metadata)
+            remote_transcript.chmod(0o600)
+            remote_metadata.chmod(0o600)
+
+    return {
+        "state": "ready",
+        "agent": agent,
+        "resume_id": resume_id,
+        "remote_run_id": f"{run_name}::{task_name}",
+        "transcript_bytes": transcript_bytes,
+        "source_session_alive": bool(r.get("alive")),
+        "launch_policy": "manual-resume-only",
+    }
+
+
 _AGENT_EXIT_MARKER = "--- Agent exited ---"
 
 
@@ -5642,7 +5895,15 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             busy_paths.update(_session_sync_paths(run, root))
         return sorted(busy_paths)
 
-    sync_status = SyncStatusService(sync_settings, busy_sync_paths)
+    def publish_session_handoff(
+        job: dict[str, Any], cancel: threading.Event,
+    ) -> dict[str, Any]:
+        return _publish_session_handoff(outputs_dir, sync_settings, job, cancel)
+
+    sync_status = SyncStatusService(
+        sync_settings, busy_sync_paths,
+        completion_callback=publish_session_handoff,
+    )
     dashboard_instance_id = uuid.uuid4().hex
 
     @asynccontextmanager
@@ -5871,6 +6132,8 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     @app.get("/api/sessions/{run_id}/sync-scope")
     def get_session_sync_scope(run_id: str):
         run, paths = session_sync_scope(run_id)
+        resume = run.get("resume") if isinstance(run.get("resume"), dict) else {}
+        resume_agent = _norm_agent(resume.get("agent") or run.get("agent") or "")
         return {
             "ok": True,
             "run_id": run_id,
@@ -5880,6 +6143,11 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 str(sync_status.settings.local_path / path) for path in paths
             ],
             "default_mode": "when_idle",
+            "resume_handoff": bool(
+                (run.get("resume_id") or resume.get("id"))
+                and resume_agent in {"claude", "codex"}
+            ),
+            "resume_agent": resume_agent,
         }
 
     @app.post("/api/sessions/{run_id}/sync")
@@ -5904,6 +6172,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "scope": "session",
             "scope_label": label,
             "paths": paths,
+            "resume_handoff": "after-project-sync",
             "automatic_deletes": False,
         }
 

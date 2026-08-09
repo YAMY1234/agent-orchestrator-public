@@ -648,6 +648,103 @@ class SyncStatusTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_scoped_session_sync_publishes_completion_handoff(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            local.mkdir()
+            remote.mkdir()
+            (local / "project").mkdir()
+            (remote / "project").mkdir()
+            (local / "project" / "file.txt").write_text("same")
+            (remote / "project" / "file.txt").write_text("same")
+            seen = []
+
+            def publish(job, cancel):
+                seen.append((job["scope_run_id"], cancel.is_set()))
+                return {"state": "ready", "remote_run_id": "handoff::demo"}
+
+            service = sync_status.SyncStatusService(
+                sync_status.SyncSettings(
+                    enabled=True, local_root=str(local), remote_root=str(remote),
+                    paths=("project",),
+                    state_db=str(temp / "state" / "sync.sqlite3"),
+                ),
+                completion_callback=publish,
+            )
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                service.request_sync(
+                    "now", paths=("project",), scope_run_id="run::demo",
+                )
+
+                self.assertTrue(service._execute_sync_request(
+                    "now", service._sync_paths,
+                ))
+
+                job = service.status()["sync_job"]
+                self.assertEqual(job["state"], "complete")
+                self.assertEqual(job["handoff"]["state"], "ready")
+                self.assertEqual(seen, [("run::demo", False)])
+            finally:
+                service.stop()
+
+    def test_session_handoff_creates_stopped_remote_resume_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            outputs = temp / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            transcript = temp / "claude.jsonl"
+            transcript.write_bytes(b'{"sessionId":"resume-123"}\n{"partial":')
+            (run_dir / "session.json").write_text(json.dumps({
+                "name": "demo",
+                "label": "Demo task",
+                "agent": "claude",
+                "cwd": "/workspace/demo",
+                "status": "running",
+                "resume_agent": "claude",
+                "resume_id": "resume-123",
+                "resume_source_path": str(transcript),
+                "linked_folders": [{
+                    "path": "/workspace/demo", "label": "demo",
+                    "type": "folder",
+                }],
+            }))
+            remote_code = temp / "remote" / "agent-orchestrator"
+            settings = sync_status.SyncSettings(
+                enabled=True,
+                local_root=str(temp / "Projects"),
+                remote_root=str(temp / "RemoteProjects"),
+                remote_code_root=str(remote_code),
+            )
+
+            result = dashboard._publish_session_handoff(
+                outputs,
+                settings,
+                {
+                    "scope_run_id": "demo-run::demo",
+                    "scope_paths": ["repo"],
+                },
+                threading.Event(),
+            )
+
+            self.assertEqual(result["state"], "ready")
+            remote_run = remote_code / "outputs" / "handoff-claude-resume-123"
+            metadata = json.loads((remote_run / "session.json").read_text())
+            self.assertEqual(metadata["status"], "handoff-ready")
+            self.assertEqual(metadata["resume_id"], "resume-123")
+            remote_transcript = Path(metadata["resume_source_path"])
+            self.assertEqual(
+                remote_transcript.read_bytes(),
+                b'{"sessionId":"resume-123"}\n',
+            )
+            self.assertEqual(
+                stat.S_IMODE(remote_transcript.stat().st_mode), 0o600,
+            )
+
     def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

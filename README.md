@@ -261,6 +261,13 @@ affected paths to become idle, while Shift-click syncs the currently safe items
 immediately. During a queued or running sync the same button becomes **Cancel**.
 The workspace-wide actions remain available as a fallback.
 
+After a session-scoped project sync is verified, Agent Orchestrator also
+publishes a dormant resume handoff for Claude Code and Codex when
+`remote_code_root` is configured. The native transcript and session metadata
+are copied to the remote machine, where the task appears as resumable but is
+not started. This keeps the final decision to switch machines explicit and
+avoids launching a second agent automatically.
+
 The comparison baseline lives outside the project tree in Agent Orchestrator's
 local state directory. Copy
 [`examples/dashboard.local.json`](examples/dashboard.local.json), select the

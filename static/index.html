@@ -2561,7 +2561,7 @@
     }
     button.textContent = "Sync";
     button.disabled = !syncStatus.baseline_initialized || active;
-    button.title = "Sync this session's project when idle (Shift-click: sync safe items now)";
+    button.title = "Sync this session's project and publish a remote resume handoff when idle (Shift-click: sync safe items now)";
   }
 
   function syncEscape(value) {
@@ -2633,6 +2633,9 @@
         jobText += ` · scan ${Number(job.scope_scan_seconds).toFixed(2)}s`;
       }
       if (jobPlan.push || jobPlan.pull) jobText += ` (${Number(jobPlan.push || 0)}↑ ${Number(jobPlan.pull || 0)}↓)`;
+      if (job.handoff && job.handoff.state) {
+        jobText += ` · handoff ${syncEscape(job.handoff.state)}`;
+      }
       if (job.reason) jobText += ` — ${syncEscape(job.reason)}`;
       parts.push(jobText);
     }
@@ -2745,9 +2748,13 @@
       const action = mode === "now"
         ? "Sync safe one-sided changes in this project now? Busy paths will be skipped."
         : "Sync this project when its affected paths are idle?";
+      const handoff = scope.resume_handoff
+        ? `\n\nAfter the project is verified, its ${scope.resume_agent || "agent"} resume history will be copied to the remote dashboard as a stopped, manually resumable session. It will not be started automatically.`
+        : "";
       if (!window.confirm(
         `${action}\n\nSession: ${scope.display_name || runId}\nScope:\n${preview}${omitted}`
         + "\n\nConflicts and deletions are never applied automatically."
+        + handoff
       )) return;
       await api(`/api/sessions/${encodeURIComponent(runId)}/sync`, {
         method: "POST", body: { mode },
@@ -4501,7 +4508,7 @@
         <button class="btn-progress" title="发送『现在进度如何？』">进度</button>
         <button class="btn-monitor" title="发送 5 分钟心跳监控指令">监控</button>
         <button class="btn-link-folder" title="Link a folder, file, or URL to this pane">Link</button>
-        <button class="btn-sync-project" title="Sync this session's project when idle (Shift-click: sync safe items now)">Sync</button>
+          <button class="btn-sync-project" title="Sync this session's project and publish a remote resume handoff when idle (Shift-click: sync safe items now)">Sync</button>
       </div>
     `;
     grid.appendChild(card);

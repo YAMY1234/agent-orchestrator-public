@@ -546,7 +546,10 @@ class _EventHandler:
 
 class SyncStatusService:
     def __init__(self, settings: SyncSettings,
-                 busy_paths_provider: Optional[Callable[[], Iterable[str]]] = None):
+                 busy_paths_provider: Optional[Callable[[], Iterable[str]]] = None,
+                 completion_callback: Optional[
+                     Callable[[dict[str, Any], threading.Event], dict[str, Any]]
+                 ] = None):
         self.settings = settings
         self.store: Optional[SyncStore] = None
         self._stop = threading.Event()
@@ -563,6 +566,7 @@ class SyncStatusService:
         self._watcher = "disabled" if not settings.enabled else "pending"
         self._cached_status: Optional[dict[str, Any]] = None
         self._busy_paths_provider = busy_paths_provider or (lambda: ())
+        self._completion_callback = completion_callback
         self._transfer = WorkspaceTransfer(
             local_root=settings.local_path,
             remote_root=settings.remote_root,
@@ -895,9 +899,14 @@ class SyncStatusService:
                 self._sync_needs_refresh = True
             return False
         if not plan.actionable:
+            completion = self._run_completion_callback()
+            if self._sync_cancel.is_set():
+                self._finish_cancelled()
+                return True
             self._finish_sync("complete", {
                 "plan": plan.summary(), "transferred_items": 0,
                 "agreements_accepted": agreements_accepted,
+                **completion,
             })
             return True
         with self._lock:
@@ -928,15 +937,43 @@ class SyncStatusService:
                         if path in local and _records_equal(local.get(path), remote.get(path))]
             self.store.merge("baseline", accepted)
             self._cached_status = self._build_status()
+            completion = self._run_completion_callback()
+            if self._sync_cancel.is_set():
+                self._finish_cancelled()
+                return True
             self._finish_sync("complete", {
                 **result, "accepted": len(accepted),
                 "agreements_accepted": agreements_accepted,
+                **completion,
             })
         except TransferCancelled:
             self._finish_cancelled()
         except Exception as exc:
             self._finish_sync("failed", {"reason": str(exc)})
         return True
+
+    def _run_completion_callback(self) -> dict[str, Any]:
+        """Publish optional session handoff data after a verified sync.
+
+        A project transfer remains successful when handoff publication fails;
+        callers get a separate ``handoff.state=failed`` result instead of a
+        misleading workspace-sync failure. Global syncs never invoke it.
+        """
+        callback = self._completion_callback
+        with self._lock:
+            job = dict(self._sync_job)
+        if callback is None or not job.get("scope_run_id"):
+            return {}
+        if self._sync_cancel.is_set():
+            return {}
+        try:
+            handoff = callback(job, self._sync_cancel)
+        except TransferCancelled:
+            self._sync_cancel.set()
+            return {}
+        except Exception as exc:
+            handoff = {"state": "failed", "reason": str(exc)}
+        return {"handoff": handoff}
 
     def _finish_cancelled(self) -> None:
         self._last_error = ""

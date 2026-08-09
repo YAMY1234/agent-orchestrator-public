@@ -238,6 +238,11 @@ project 或 task 产物，再只同步这个范围。只有终端仍在持续输
 当前安全的项目。同步排队或运行期间，同一个按钮会变成 **Cancel**。全 workspace
 同步仍保留作为兜底。
 
+如果配置了 `remote_code_root`，session 范围的 project sync 通过完整校验后，还会为
+Claude Code 和 Codex 发布一份停止状态的 resume handoff。原生 transcript 与 session
+metadata 会复制到远端，任务会出现在可恢复列表中，但不会被自动启动。是否真正切换
+机器仍由用户明确决定，也不会在后台悄悄启动第二个 agent。
+
 比较 baseline 保存在 project tree 之外的 Agent Orchestrator 本地状态目录中。复制
 [`examples/dashboard.local.json`](examples/dashboard.local.json)，选择需要跟踪的
 workspaces；确认两台机器使用相同 Agent Orchestrator revision 后，再启用
