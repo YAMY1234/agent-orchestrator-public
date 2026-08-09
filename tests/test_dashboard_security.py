@@ -407,21 +407,68 @@ class SyncStatusTests(unittest.TestCase):
                 dashboard, "load_sync_settings", return_value=settings,
             ):
                 app = dashboard.create_app(outputs, ttyd_enabled=False)
-            with patch.object(app.state.sync_status, "request_sync") as request_sync:
+            with patch.object(app.state.sync_status, "request_sync") as request_sync, \
+                    patch.object(app.state.sync_status, "cancel_sync") as cancel_sync:
                 with TestClient(app) as client:
                     preview = client.get("/api/sessions/demo-run::demo/sync-scope")
                     queued = client.post(
                         "/api/sessions/demo-run::demo/sync",
                         json={"mode": "when_idle"},
                     )
+                    cancelled = client.post("/api/sync/cancel")
 
             self.assertEqual(preview.status_code, 200)
             self.assertEqual(preview.json()["paths"], ["repo"])
             self.assertEqual(queued.status_code, 200)
             self.assertEqual(queued.json()["scope"], "session")
+            self.assertEqual(cancelled.status_code, 200)
+            cancel_sync.assert_called_once_with()
             request_sync.assert_called_once_with(
                 "when_idle", paths=["repo"], scope_label="demo",
+                scope_run_id="demo-run::demo",
             )
+
+    def test_busy_sync_paths_use_each_sessions_concrete_project_scope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            outputs = temp / "outputs"
+            outputs.mkdir()
+            root = temp / "Projects"
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            (repo_a / ".git").mkdir(parents=True)
+            (repo_b / ".git").mkdir(parents=True)
+            (repo_b / "src").mkdir()
+            task_file = root / "current" / "topic" / "result.md"
+            task_file.parent.mkdir(parents=True)
+            task_file.write_text("result")
+            settings = sync_status.SyncSettings(
+                enabled=True, local_root=str(root), remote_root=str(temp / "remote"),
+                paths=("repo-a",),
+                state_db=str(temp / "state" / "sync.sqlite3"),
+            )
+            runs = [
+                {"alive": True, "busy": True, "background_active": False,
+                 "cwd": str(root), "linked_folders": []},
+                {"alive": True, "busy": True, "background_active": False,
+                 "cwd": str(root), "linked_folders": [
+                     {"path": str(repo_a), "type": "folder"},
+                     {"path": str(task_file), "type": "file"},
+                 ]},
+                {"alive": True, "busy": True, "background_active": False,
+                 "cwd": str(repo_b / "src"), "linked_folders": []},
+            ]
+
+            with patch.object(
+                dashboard, "load_sync_settings", return_value=settings,
+            ):
+                app = dashboard.create_app(outputs, ttyd_enabled=False)
+            with patch.object(dashboard, "_discover_runs", return_value=runs):
+                paths = app.state.sync_status._busy_paths_provider()
+
+            self.assertEqual(paths, [
+                "current/topic/result.md", "repo-a", "repo-b",
+            ])
 
     def test_session_sync_scope_uses_git_roots_and_linked_task_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -648,6 +695,50 @@ class SyncStatusTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_waiting_scoped_sync_can_be_cancelled_without_transfer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            local = temp / "local"
+            remote = temp / "remote"
+            for root in (local, remote):
+                (root / "project").mkdir(parents=True)
+                (root / "project" / "code.py").write_text("base")
+            service = sync_status.SyncStatusService(
+                sync_status.SyncSettings(
+                    enabled=True, local_root=str(local), remote_root=str(remote),
+                    paths=("project",),
+                    state_db=str(temp / "state" / "sync.sqlite3"),
+                ),
+                busy_paths_provider=lambda: ("project",),
+            )
+            try:
+                service.refresh_now()
+                service.initialize_baseline("remote")
+                (local / "project" / "code.py").write_text("local update")
+                service.request_sync(
+                    "when_idle", paths=("project",),
+                    scope_label="Project", scope_run_id="run::project",
+                )
+
+                self.assertFalse(service._execute_sync_request(
+                    "when_idle", service._sync_paths,
+                ))
+                self.assertEqual(service.status()["sync_job"]["state"], "waiting_idle")
+
+                service.cancel_sync()
+                self.assertTrue(service._execute_sync_request(
+                    "when_idle", service._sync_paths,
+                ))
+
+                job = service.status()["sync_job"]
+                self.assertEqual(job["state"], "cancelled")
+                self.assertEqual(job["scope_run_id"], "run::project")
+                self.assertEqual(
+                    (remote / "project" / "code.py").read_text(), "base",
+                )
+            finally:
+                service.stop()
+
     def test_scoped_sync_tracks_a_path_outside_global_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -759,27 +850,76 @@ class SyncStatusTests(unittest.TestCase):
 
 
 class SyncTransferTests(unittest.TestCase):
+    def test_cancel_terminates_an_inflight_rsync(self):
+        started = threading.Event()
+        terminated = threading.Event()
+
+        class BlockingProcess:
+            returncode = None
+
+            def communicate(self, timeout=None):
+                started.set()
+                terminated.wait(timeout=2)
+                self.returncode = -15
+                return "", "terminated"
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                terminated.set()
+
+            def kill(self):
+                terminated.set()
+
+        proc = BlockingProcess()
+        transfer = sync_transfer.WorkspaceTransfer(
+            local_root=Path("/local/Projects"), remote_root="/remote/Projects",
+            remote_host="", excludes=(), timeout_seconds=30,
+        )
+        errors = []
+
+        def execute():
+            try:
+                transfer.execute(sync_transfer.TransferPlan(
+                    push=["project/file.txt"],
+                ))
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(sync_transfer.subprocess, "Popen", return_value=proc):
+            thread = threading.Thread(target=execute)
+            thread.start()
+            self.assertTrue(started.wait(timeout=1))
+            transfer.cancel()
+            thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(terminated.is_set())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], sync_transfer.TransferCancelled)
+
     def test_remote_busy_paths_accept_resolved_root_alias(self):
         transfer = sync_transfer.WorkspaceTransfer(
             local_root=Path("/local/Projects"),
             remote_root="/Users/demo/Documents/Projects",
             remote_host="workdesk", excludes=(),
         )
-        result = Mock(
-            returncode=0, stderr="",
-            stdout=(
-                "__ORCH_ROOT__\t/home/demo/Projects\n"
-                "orch-task\t/home/demo/Projects/repo/src\t0\n"
-                "orch-task-web\t/home/demo/Projects/repo\t0\n"
-                "other\t/home/demo/Projects/ignored\t0\n"
-            ),
+        proc = Mock(returncode=0)
+        proc.communicate.return_value = (
+            "__ORCH_ROOT__\t/home/demo/Projects\n"
+            "orch-root\t/home/demo/Projects\t0\t\n"
+            "orch-task\t/home/demo/Projects/repo/src\t0\t/home/demo/Projects/repo\n"
+            "orch-task-web\t/home/demo/Projects/repo\t0\t/home/demo/Projects/repo\n"
+            "other\t/home/demo/Projects/ignored\t0\t\n",
+            "",
         )
 
-        with patch.object(sync_transfer.subprocess, "run", return_value=result) as run:
+        with patch.object(sync_transfer.subprocess, "Popen", return_value=proc) as popen:
             paths = transfer.remote_active_paths()
 
-        self.assertEqual(paths, ["repo/src"])
-        self.assertIn("realpath --", run.call_args.args[0][-1])
+        self.assertEqual(paths, ["repo"])
+        self.assertIn("realpath --", popen.call_args.args[0][-1])
 
     def test_plan_skips_conflicts_deletions_git_large_and_busy_paths(self):
         changes = [

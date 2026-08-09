@@ -5,9 +5,14 @@ from __future__ import annotations
 import shlex
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
+
+
+class TransferCancelled(RuntimeError):
+    """Raised when the user cancels an in-flight workspace transfer."""
 
 
 @dataclass
@@ -88,6 +93,22 @@ class WorkspaceTransfer:
         self.remote_host = remote_host
         self.excludes = tuple(excludes)
         self.timeout_seconds = timeout_seconds
+        self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._active_proc: Optional[subprocess.Popen] = None
+
+    def reset_cancel(self) -> None:
+        self._cancelled.clear()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        with self._lock:
+            proc = self._active_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
 
     def remote_active_paths(self) -> list[str]:
         if not self.remote_host:
@@ -98,47 +119,79 @@ class WorkspaceTransfer:
             f"printf '%s' {quoted_root}); "
             "printf '__ORCH_ROOT__\\t%s\\n' \"$root\"; "
             "tmux list-panes -a -F "
-            "'#{session_name}\\t#{pane_current_path}\\t#{pane_dead}'"
+            "'#{session_name}\\t#{pane_current_path}\\t#{pane_dead}' | "
+            "while IFS=\"$(printf '\\t')\" read -r session cwd dead; do "
+            "git_root=$(git -C \"$cwd\" rev-parse --show-toplevel "
+            "2>/dev/null || true); "
+            "printf '%s\\t%s\\t%s\\t%s\\n' "
+            "\"$session\" \"$cwd\" \"$dead\" \"$git_root\"; done"
         )
         command = [
             "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
             self.remote_host, remote_command,
         ]
-        result = subprocess.run(
+        if self._cancelled.is_set():
+            raise TransferCancelled("sync cancelled")
+        proc = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=30, check=False,
+            text=True,
         )
-        if result.returncode:
-            detail = result.stderr.strip()
+        with self._lock:
+            self._active_proc = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise RuntimeError("could not inspect remote tmux sessions: timed out")
+        finally:
+            with self._lock:
+                if self._active_proc is proc:
+                    self._active_proc = None
+        if self._cancelled.is_set():
+            raise TransferCancelled("sync cancelled")
+        if proc.returncode:
+            detail = stderr.strip()
             raise RuntimeError(detail or "could not inspect remote tmux sessions")
         roots = [Path(self.remote_root)]
         paths = set()
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             fields = line.split("\t")
             if len(fields) == 2 and fields[0] == "__ORCH_ROOT__":
                 resolved = fields[1].strip()
                 if resolved:
                     roots.append(Path(resolved))
                 continue
-            if len(fields) != 3:
+            if len(fields) != 4:
                 continue
-            session, cwd, dead = fields
+            session, cwd, dead, git_root = fields
             if (not session.startswith("orch-") or session.endswith("-web")
                     or dead == "1"):
                 continue
             rel = None
-            for root in roots:
-                try:
-                    rel = Path(cwd).relative_to(root).as_posix()
-                    break
-                except ValueError:
+            for candidate in (git_root, cwd):
+                if not candidate:
                     continue
+                for root in roots:
+                    try:
+                        rel = Path(candidate).relative_to(root).as_posix()
+                        break
+                    except ValueError:
+                        continue
+                if rel is not None:
+                    break
             if rel is None:
                 continue
-            paths.add("" if rel == "." else rel)
+            # A generic Projects-root cwd does not mean every project is
+            # being modified. Scoped sync only blocks on a concrete remote
+            # project cwd; remote Linked Items are not available here.
+            if rel != ".":
+                paths.add(rel)
         return sorted(paths)
 
     def execute(self, plan: TransferPlan) -> dict[str, Any]:
+        if self._cancelled.is_set():
+            raise TransferCancelled("sync cancelled")
         dry_run = []
         transferred = []
         if plan.push:
@@ -161,6 +214,8 @@ class WorkspaceTransfer:
         selected = sorted(set(paths))
         if not selected:
             return []
+        if self._cancelled.is_set():
+            raise TransferCancelled("sync cancelled")
         with tempfile.NamedTemporaryFile() as manifest:
             manifest.write(b"\0".join(path.encode() for path in selected) + b"\0")
             manifest.flush()
@@ -184,11 +239,29 @@ class WorkspaceTransfer:
                 if self.remote_host else str(Path(self.remote_root)) + "/"
             )
             command.extend([local, remote] if direction == "push" else [remote, local])
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, timeout=self.timeout_seconds, check=False,
+                text=True,
             )
-        if result.returncode:
-            detail = result.stderr.strip()
-            raise RuntimeError(detail or f"rsync {direction} exited {result.returncode}")
-        return [line for line in result.stdout.splitlines() if line.strip()]
+            with self._lock:
+                self._active_proc = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=self.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                raise RuntimeError(
+                    f"rsync {direction} timed out after "
+                    f"{self.timeout_seconds:g}s"
+                )
+            finally:
+                with self._lock:
+                    if self._active_proc is proc:
+                        self._active_proc = None
+        if self._cancelled.is_set():
+            raise TransferCancelled("sync cancelled")
+        result_returncode = proc.returncode
+        if result_returncode:
+            detail = stderr.strip()
+            raise RuntimeError(detail or f"rsync {direction} exited {result_returncode}")
+        return [line for line in stdout.splitlines() if line.strip()]

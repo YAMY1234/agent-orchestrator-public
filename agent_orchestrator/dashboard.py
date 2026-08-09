@@ -5635,21 +5635,11 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             if (not run.get("alive")
                     or not (run.get("busy") or run.get("background_active"))):
                 continue
-            candidates = [run.get("cwd", "")]
-            candidates.extend(
-                item.get("path", "")
-                for item in _normalize_linked_folders(run.get("linked_folders"))
-                if item.get("type", "folder") != "url"
-            )
-            for value in candidates:
-                path = Path(str(value or "")).expanduser()
-                if not path.is_absolute():
-                    continue
-                try:
-                    rel = path.resolve(strict=False).relative_to(root).as_posix()
-                except ValueError:
-                    continue
-                busy_paths.add("" if rel == "." else rel)
+            # Apply the activity signal only to this session's concrete
+            # project/Linked Items scope. A generic Projects-root cwd is
+            # intentionally ignored; otherwise one unrelated busy session
+            # blocks every scoped sync in the workspace.
+            busy_paths.update(_session_sync_paths(run, root))
         return sorted(busy_paths)
 
     sync_status = SyncStatusService(sync_settings, busy_sync_paths)
@@ -5903,7 +5893,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         label = str(run.get("display_name") or run.get("task") or run_id)
         try:
             sync_status.request_sync(
-                mode, paths=paths, scope_label=label,
+                mode, paths=paths, scope_label=label, scope_run_id=run_id,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -5916,6 +5906,16 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "paths": paths,
             "automatic_deletes": False,
         }
+
+    @app.post("/api/sync/cancel")
+    def cancel_workspace_sync():
+        if not sync_status.settings.enabled:
+            raise HTTPException(status_code=409, detail="sync status is disabled")
+        try:
+            sync_status.cancel_sync()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "cancelling": True}
 
     @app.post("/api/sync/auto")
     async def configure_workspace_auto_sync(request: Request):

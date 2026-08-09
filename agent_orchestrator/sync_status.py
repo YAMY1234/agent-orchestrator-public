@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-from .sync_transfer import WorkspaceTransfer, build_transfer_plan
+from .sync_transfer import TransferCancelled, WorkspaceTransfer, build_transfer_plan
 
 
 DEFAULT_EXCLUDES = (
@@ -572,6 +572,7 @@ class SyncStatusService:
         )
         self._sync_request = ""
         self._sync_paths: Optional[tuple[str, ...]] = None
+        self._sync_cancel = threading.Event()
         self._sync_needs_refresh = False
         self._sync_waiting_writers = False
         self._auto_sync = False
@@ -592,6 +593,8 @@ class SyncStatusService:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._sync_cancel.set()
+        self._transfer.cancel()
         observer = self._observer
         if observer is not None:
             observer.stop()
@@ -676,7 +679,8 @@ class SyncStatusService:
 
     def request_sync(self, mode: str,
                      paths: Optional[Iterable[str]] = None,
-                     scope_label: str = "") -> None:
+                     scope_label: str = "",
+                     scope_run_id: str = "") -> None:
         if mode not in {"now", "when_idle"}:
             raise ValueError("sync mode must be now or when_idle")
         if not self.store or not self.store.get_meta("baseline_initialized_at", ""):
@@ -690,8 +694,11 @@ class SyncStatusService:
                 raise ValueError("scoped sync requires at least one path")
         with self._lock:
             if self._sync_request or self._sync_job.get("state") in {
-                    "queued", "checking", "running", "waiting_idle"}:
+                    "queued", "checking", "running", "waiting_idle",
+                    "cancelling"}:
                 raise RuntimeError("a workspace sync is already active")
+            self._sync_cancel.clear()
+            self._transfer.reset_cancel()
             self._sync_request = mode
             self._sync_paths = scope_paths
             self._sync_needs_refresh = True
@@ -701,7 +708,29 @@ class SyncStatusService:
                 "scope": "paths" if scope_paths is not None else "workspace",
                 "scope_paths": list(scope_paths or ()),
                 "scope_label": str(scope_label or "").strip(),
+                "scope_run_id": str(scope_run_id or "").strip(),
             }
+        self._wake.set()
+
+    def cancel_sync(self) -> None:
+        with self._lock:
+            active = bool(self._sync_request) or self._sync_job.get("state") in {
+                "queued", "checking", "running", "waiting_idle", "cancelling",
+            }
+            if not active:
+                raise RuntimeError("no workspace sync is active")
+            self._sync_cancel.set()
+            self._sync_job = {
+                **self._sync_job, "state": "cancelling",
+                "cancel_requested_at": _utc_now(),
+            }
+            proc = self._active_proc
+        self._transfer.cancel()
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
         self._wake.set()
 
     def set_auto_sync(self, enabled: bool) -> None:
@@ -784,6 +813,8 @@ class SyncStatusService:
         )
         if transferable:
             with self._lock:
+                self._sync_cancel.clear()
+                self._transfer.reset_cancel()
                 self._sync_request = "when_idle"
                 self._sync_paths = None
                 self._sync_needs_refresh = True
@@ -798,6 +829,9 @@ class SyncStatusService:
     ) -> bool:
         if not self.store:
             return True
+        if self._sync_cancel.is_set():
+            self._finish_cancelled()
+            return True
         with self._lock:
             needs_refresh = self._sync_needs_refresh
             self._sync_job = {
@@ -810,6 +844,9 @@ class SyncStatusService:
                 self._refresh_scope(scope_paths)
             with self._lock:
                 self._sync_needs_refresh = False
+            if self._sync_cancel.is_set():
+                self._finish_cancelled()
+                return True
             if self._phase != "ready":
                 self._finish_sync("failed", {
                     "reason": self._last_error or "workspace refresh failed",
@@ -828,8 +865,14 @@ class SyncStatusService:
         try:
             local_busy = tuple(self._busy_paths_provider())
             remote_busy = tuple(self._transfer.remote_active_paths())
+        except TransferCancelled:
+            self._finish_cancelled()
+            return True
         except Exception as exc:
             self._finish_sync("failed", {"reason": str(exc)})
+            return True
+        if self._sync_cancel.is_set():
+            self._finish_cancelled()
             return True
         plan = build_transfer_plan(
             comparison["changes"], local_busy=local_busy,
@@ -864,11 +907,17 @@ class SyncStatusService:
             }
         try:
             result = self._transfer.execute(plan)
+            if self._sync_cancel.is_set():
+                self._finish_cancelled()
+                return True
             attempted = set(plan.push) | set(plan.pull)
             if scope_paths is None:
                 self._refresh(full=True)
             else:
                 self._refresh_scope(scope_paths)
+            if self._sync_cancel.is_set():
+                self._finish_cancelled()
+                return True
             if self._phase != "ready":
                 raise RuntimeError(
                     self._last_error or "post-transfer verification failed"
@@ -883,9 +932,16 @@ class SyncStatusService:
                 **result, "accepted": len(accepted),
                 "agreements_accepted": agreements_accepted,
             })
+        except TransferCancelled:
+            self._finish_cancelled()
         except Exception as exc:
             self._finish_sync("failed", {"reason": str(exc)})
         return True
+
+    def _finish_cancelled(self) -> None:
+        self._last_error = ""
+        self._phase = "ready"
+        self._finish_sync("cancelled", {"reason": "cancelled by user"})
 
     def _finish_sync(self, state: str, details: dict[str, Any]) -> None:
         with self._lock:
