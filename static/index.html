@@ -2567,7 +2567,7 @@
             </select>
             <select id="mission-timeline-sort" title="Sort timeline rows">
               <option value="idle">Idle longest</option>
-              <option value="active">Active longest</option>
+              <option value="active" selected>Active longest</option>
               <option value="utilization">Highest utilization</option>
               <option value="priority">Priority</option>
               <option value="name">Name</option>
@@ -3476,7 +3476,7 @@
         .filter(Boolean).join(" ").toLowerCase().includes(query);
     });
     const priorityRank = { p0: 0, p1: 1, p2: 2, "": 3 };
-    const sort = $("mission-timeline-sort").value || "idle";
+    const sort = $("mission-timeline-sort").value || "active";
     rows.sort((a, b) => {
       if (sort === "name") return String(a.display_name).localeCompare(String(b.display_name));
       if (sort === "priority") {
