@@ -731,7 +731,6 @@
   }
   .pane-card.narrow .pane-head .pane-round,
   .pane-card.narrow .pane-head .pane-idle,
-  .pane-card.narrow .pane-head .pane-state-select,
   .pane-card.narrow .pane-head .pane-theme-select { display: none; }
   .pane-card.narrow .pane-actions {
     width: 100%;
@@ -5222,11 +5221,11 @@
         </div>
         <div class="pane-actions">
           <span class="pane-idle" data-mode="idle" title="Sustained idle time">idle</span>
-          <select class="pane-state-select" title="Panel importance / state" data-state="${escapeHtml(s.panel_state || "")}">
-            ${panelStateOptionsHtml(s.panel_state)}
-          </select>
           <select class="pane-theme-select" title="Terminal theme" data-theme="${escapeHtml(terminalThemeValue(s.terminal_theme))}">
             ${terminalThemeOptionsHtml(s.terminal_theme)}
+          </select>
+          <select class="pane-state-select" title="Panel importance / state" data-state="${escapeHtml(s.panel_state || "")}">
+            ${panelStateOptionsHtml(s.panel_state)}
           </select>
           <button class="btn-zoom" title="Open a larger pane view">⛶</button>
           <button class="btn-reload" title="Reconnect this pane (if display is glitchy)">↻</button>
