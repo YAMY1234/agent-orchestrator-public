@@ -1108,6 +1108,7 @@
     min-height: 56px; border-bottom: 1px solid var(--border); align-items: stretch;
   }
   .mission-gantt-row:last-child { border-bottom: 0; }
+  .mission-gantt-row[data-run-id] { cursor: pointer; }
   .mission-gantt-axis {
     position: sticky; top: 0; z-index: 4; min-height: 39px; background: var(--bg-soft);
   }
@@ -3786,7 +3787,7 @@
     if (slot >= 0) $("conn-status").textContent = `Opened ${runId}`;
   });
   $("mission-gantt").addEventListener("click", event => {
-    const target = event.target.closest(".mission-timeline-open");
+    const target = event.target.closest(".mission-gantt-row[data-run-id]");
     const runId = target?.dataset.runId;
     if (!runId) return;
     const slot = placeInFirstFree(runId);
