@@ -3765,6 +3765,14 @@
       renderMissionControl();
     });
   });
+  function openMissionSessionZoomSoon(runId) {
+    requestAnimationFrame(() => {
+      const ctrl = paneCtrls.get(runId);
+      if (!ctrl || !ctrl.cardEl) return;
+      highlightPaneForSession(runId, { scroll: false });
+      openPaneZoom(ctrl.cardEl);
+    });
+  }
   $("mission-grid").addEventListener("click", event => {
     const btn = event.target.closest(".mission-open");
     if (!btn) return;
@@ -3774,7 +3782,7 @@
     saveSlots();
     renderGrid();
     closeMissionControl();
-    highlightPaneForSessionSoon(runId, { scroll: true });
+    openMissionSessionZoomSoon(runId);
     if (slot >= 0) $("conn-status").textContent = `Opened ${runId}`;
   });
   $("mission-gantt").addEventListener("click", event => {
@@ -3785,7 +3793,7 @@
     saveSlots();
     renderGrid();
     closeMissionControl();
-    highlightPaneForSessionSoon(runId, { scroll: true });
+    openMissionSessionZoomSoon(runId);
     if (slot >= 0) $("conn-status").textContent = `Opened ${runId}`;
   });
   document.addEventListener("keydown", event => {
