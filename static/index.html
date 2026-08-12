@@ -655,6 +655,13 @@
   .pane-head .dot,
   .pane-head button,
   .pane-head select { flex-shrink: 0; }
+  .pane-head .btn-mission-view { display: none; }
+  .pane-card.zoomed-pane .pane-head .btn-mission-view {
+    display: inline-flex;
+    align-items: center;
+    color: var(--accent);
+    border-color: rgba(88,166,255,.55);
+  }
   .pane-state-select {
     min-width: 78px;
     height: 24px;
@@ -5229,6 +5236,7 @@
           <span class="pill pane-round">${s.max_rounds ? `${s.round || 0}/${s.max_rounds}` : ""}</span>
         </div>
         <div class="pane-actions">
+          <button class="btn-mission-view" title="Return to Mission Control">Mission</button>
           <span class="pane-idle" data-mode="idle" title="Sustained idle time">idle</span>
           <select class="pane-theme-select" title="Terminal theme" data-theme="${escapeHtml(terminalThemeValue(s.terminal_theme))}">
             ${terminalThemeOptionsHtml(s.terminal_theme)}
@@ -5288,6 +5296,7 @@
     const btnMonitor = card.querySelector(".btn-monitor");
     const btnLinkFolder = card.querySelector(".btn-link-folder");
     const btnSyncProject = card.querySelector(".btn-sync-project");
+    const btnMissionView = card.querySelector(".btn-mission-view");
     const stateSelect = card.querySelector(".pane-state-select");
     const themeSelect = card.querySelector(".pane-theme-select");
     const btnZoom = card.querySelector(".btn-zoom");
@@ -5452,6 +5461,10 @@
           runId, btnSyncProject, event.shiftKey ? "now" : "when_idle"
         );
       }
+    });
+    btnMissionView.addEventListener("click", () => {
+      closePaneZoom();
+      openMissionControl();
     });
     stateSelect.addEventListener("change", () => setPanelState(runId, stateSelect.value, stateSelect));
     themeSelect.addEventListener("change", () => setTerminalTheme(runId, themeSelect.value, themeSelect));
