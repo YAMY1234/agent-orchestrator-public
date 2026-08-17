@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 import plistlib
@@ -380,6 +382,30 @@ class DashboardAuthenticationTests(unittest.TestCase):
 
 
 class SyncStatusTests(unittest.TestCase):
+    def test_scan_command_accepts_config_over_stdin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "project").mkdir()
+            (root / "project" / "result.txt").write_text("ready")
+            payload = base64.urlsafe_b64encode(json.dumps({
+                "paths": ["project"],
+                "excludes": [],
+                "digest_files": False,
+            }).encode()).decode()
+            stdout = io.StringIO()
+
+            with patch.object(sys, "stdin", io.StringIO(payload)), \
+                    patch.object(sys, "stdout", stdout):
+                result = sync_status.main([
+                    "scan", "--root", str(root), "--config-stdin",
+                ])
+
+            self.assertEqual(result, 0)
+            records = [json.loads(line) for line in stdout.getvalue().splitlines()]
+            self.assertIn("project/result.txt", {
+                record["path"] for record in records
+            })
+
     def test_session_sync_api_previews_and_queues_derived_scope(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

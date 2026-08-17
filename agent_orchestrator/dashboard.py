@@ -3486,6 +3486,8 @@ def _publish_session_handoff(
         )
         metadata_path = temp / "session.json"
         write_json(metadata_path, metadata)
+        transcript.chmod(0o600)
+        metadata_path.chmod(0o600)
 
         if settings.remote_host:
             token = uuid.uuid4().hex
@@ -3501,11 +3503,11 @@ def _publish_session_handoff(
                 "-o ServerAliveInterval=15 -o ServerAliveCountMax=6"
             )
             _run_handoff_command([
-                "rsync", "-a", "--chmod=F600", "-e", rsync_shell,
+                "rsync", "-a", "-e", rsync_shell,
                 str(transcript), f"{settings.remote_host}:{transcript_tmp}",
             ], cancel)
             _run_handoff_command([
-                "rsync", "-a", "--chmod=F600", "-e", rsync_shell,
+                "rsync", "-a", "-e", rsync_shell,
                 str(metadata_path), f"{settings.remote_host}:{metadata_tmp}",
             ], cancel)
             publish_command = "mv -- {} {} && mv -- {} {}".format(

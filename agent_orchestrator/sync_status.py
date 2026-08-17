@@ -1139,7 +1139,7 @@ class SyncStatusService:
             self.settings.remote_python,
             "-m", "agent_orchestrator.sync_status", "scan",
             "--root", self.settings.remote_root,
-            "--config-b64", payload,
+            "--config-stdin",
         ])
         remote_command = scan_command
         if self.settings.remote_code_root:
@@ -1153,10 +1153,16 @@ class SyncStatusService:
         ]
         with tempfile.TemporaryFile() as stderr:
             proc = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=stderr, text=True,
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=stderr, text=True,
             )
             with self._lock:
                 self._active_proc = proc
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(payload)
+            finally:
+                proc.stdin.close()
             timed_out = threading.Event()
 
             def terminate() -> None:
@@ -1298,7 +1304,8 @@ class SyncStatusService:
 
 def _scan_command(args: argparse.Namespace) -> int:
     try:
-        config = json.loads(base64.urlsafe_b64decode(args.config_b64).decode())
+        encoded = sys.stdin.read() if args.config_stdin else args.config_b64
+        config = json.loads(base64.urlsafe_b64decode(encoded).decode())
         records = scan_paths(
             Path(args.root), config.get("paths", []),
             config.get("excludes", DEFAULT_EXCLUDES),
@@ -1317,7 +1324,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     scan = subparsers.add_parser("scan")
     scan.add_argument("--root", required=True)
-    scan.add_argument("--config-b64", required=True)
+    config = scan.add_mutually_exclusive_group(required=True)
+    config.add_argument("--config-b64")
+    config.add_argument("--config-stdin", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "scan":
         return _scan_command(args)
