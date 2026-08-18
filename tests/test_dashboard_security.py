@@ -846,6 +846,42 @@ Please approve the remote login
             self.assertEqual(row["current_state"], "waiting")
             self.assertEqual(row["segments"][0]["state"], "waiting")
 
+    def test_activity_timeline_can_include_recently_ended_sessions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            outputs.mkdir()
+            run = {
+                "alive": True,
+                "tmux_session": "orch-ended-demo",
+                "run_id": "ended-demo::task",
+                "display_name": "Ended demo",
+                "agent": "codex",
+                "panel_state": "flag",
+                "mission_control": {
+                    "state": "waiting", "priority": "",
+                    "needs_attention": False,
+                },
+            }
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=1000.0, force=True,
+            )
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [], now=1010.0, force=True,
+            )
+
+            active_only = dashboard._activity_timeline_payload(
+                outputs, hours=1, now=1010.0,
+            )
+            with_ended = dashboard._activity_timeline_payload(
+                outputs, hours=1, now=1010.0, include_ended=True,
+            )
+
+            self.assertEqual(active_only["sessions"], [])
+            self.assertEqual(len(with_ended["sessions"]), 1)
+            row = with_ended["sessions"][0]
+            self.assertFalse(row["alive"])
+            self.assertEqual(row["panel_state"], "flag")
+
     def test_activity_timeline_persists_intervals_and_marks_gaps(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             outputs = Path(temp_dir) / "outputs"

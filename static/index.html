@@ -1190,7 +1190,7 @@
   .mission-utilization span { display: block; height: 100%; background: var(--ok); }
   .mission-timeline-empty { padding: 48px; color: var(--text-dim); text-align: center; }
   .mission-summary {
-    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px;
   }
   .mission-stat {
     padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
@@ -1202,12 +1202,19 @@
   .mission-stat.attention strong { color: var(--warn); }
   .mission-stat.blocked strong { color: var(--err); }
   .mission-stat.completed strong { color: #d2a8ff; }
+  .mission-stat.ended strong { color: var(--text-dim); }
   .mission-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .mission-controls input {
     flex: 1 1 260px; min-width: 160px; padding: 7px 9px;
     border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
   }
-  .mission-filter.on { color: var(--accent); border-color: var(--accent); }
+  .mission-facet {
+    display: inline-flex; align-items: center; gap: 4px; flex-wrap: nowrap;
+  }
+  .mission-facet > span {
+    color: var(--text-dim); font-size: 10px; white-space: nowrap;
+  }
+  .mission-facet-filter.on { color: var(--accent); border-color: var(--accent); }
   .mission-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
     flex: 1; gap: 10px; min-height: 0; overflow: auto; padding: 1px 3px 10px 1px;
@@ -1234,6 +1241,7 @@
   .mission-badge.needs_input { color: var(--warn); border-color: var(--warn); }
   .mission-badge.blocked { color: var(--err); border-color: var(--err); }
   .mission-badge.completed { color: #d2a8ff; border-color: #d2a8ff; }
+  .mission-badge.ended { color: var(--text-dim); border-color: var(--text-dim); }
   .mission-badge.priority { color: var(--accent); border-color: var(--accent); }
   .mission-headline { min-height: 40px; color: var(--text); overflow-wrap: anywhere; }
   .mission-progress-track {
@@ -2580,6 +2588,28 @@
               <option value="priority">Priority</option>
               <option value="name">Name</option>
             </select>
+            <div class="mission-facet" role="group" aria-label="Filter timeline lifecycle">
+              <span>Sessions</span>
+              <button class="mission-facet-filter" data-mission-lifecycle="all">All</button>
+              <button class="mission-facet-filter on" data-mission-lifecycle="active">Active</button>
+              <button class="mission-facet-filter" data-mission-lifecycle="ended">Ended</button>
+            </div>
+            <div class="mission-facet" role="group" aria-label="Filter timeline labels">
+              <span>Label</span>
+              <button class="mission-facet-filter on" data-mission-marker="all">All</button>
+              <button class="mission-facet-filter" data-mission-marker="p0">P0</button>
+              <button class="mission-facet-filter" data-mission-marker="p1">P1</button>
+              <button class="mission-facet-filter" data-mission-marker="p2">P2</button>
+              <button class="mission-facet-filter" data-mission-marker="flag">Flag</button>
+            </div>
+            <div class="mission-facet" role="group" aria-label="Filter timeline activity">
+              <span>Activity</span>
+              <button class="mission-facet-filter on" data-mission-state="all">All</button>
+              <button class="mission-facet-filter" data-mission-state="attention">Attention</button>
+              <button class="mission-facet-filter" data-mission-state="working">Working</button>
+              <button class="mission-facet-filter" data-mission-state="waiting">Waiting</button>
+              <button class="mission-facet-filter" data-mission-state="completed">Completed</button>
+            </div>
             <input id="mission-timeline-search" type="search" placeholder="Filter sessions…" />
             <div class="spacer"></div>
             <div class="mission-legend">
@@ -2600,19 +2630,37 @@
         </div>
         <div class="mission-board-view" id="mission-board-view" hidden>
         <div class="mission-summary">
-          <div class="mission-stat"><strong id="mission-active-count">0</strong><span>Active sessions</span></div>
+          <div class="mission-stat"><strong id="mission-active-count">0</strong><span>Sessions in view</span></div>
           <div class="mission-stat working"><strong id="mission-working-count">0</strong><span>Working</span></div>
           <div class="mission-stat attention"><strong id="mission-attention-count">0</strong><span>Needs attention</span></div>
           <div class="mission-stat blocked"><strong id="mission-blocked-count">0</strong><span>Blocked / input</span></div>
           <div class="mission-stat"><strong id="mission-waiting-count">0</strong><span>Waiting</span></div>
           <div class="mission-stat completed"><strong id="mission-completed-count">0</strong><span>Completed</span></div>
+          <div class="mission-stat ended"><strong id="mission-ended-count">0</strong><span>Ended</span></div>
         </div>
         <div class="mission-controls">
-          <button class="mission-filter on" data-mission-filter="all">All</button>
-          <button class="mission-filter" data-mission-filter="attention">Needs attention</button>
-          <button class="mission-filter" data-mission-filter="working">Working</button>
-          <button class="mission-filter" data-mission-filter="waiting">Waiting</button>
-          <button class="mission-filter" data-mission-filter="completed">Completed</button>
+          <div class="mission-facet" role="group" aria-label="Filter board lifecycle">
+            <span>Sessions</span>
+            <button class="mission-facet-filter" data-mission-lifecycle="all">All</button>
+            <button class="mission-facet-filter on" data-mission-lifecycle="active">Active</button>
+            <button class="mission-facet-filter" data-mission-lifecycle="ended">Ended</button>
+          </div>
+          <div class="mission-facet" role="group" aria-label="Filter board labels">
+            <span>Label</span>
+            <button class="mission-facet-filter on" data-mission-marker="all">All</button>
+            <button class="mission-facet-filter" data-mission-marker="p0">P0</button>
+            <button class="mission-facet-filter" data-mission-marker="p1">P1</button>
+            <button class="mission-facet-filter" data-mission-marker="p2">P2</button>
+            <button class="mission-facet-filter" data-mission-marker="flag">Flag</button>
+          </div>
+          <div class="mission-facet" role="group" aria-label="Filter board activity">
+            <span>Activity</span>
+            <button class="mission-facet-filter on" data-mission-state="all">All</button>
+            <button class="mission-facet-filter" data-mission-state="attention">Attention</button>
+            <button class="mission-facet-filter" data-mission-state="working">Working</button>
+            <button class="mission-facet-filter" data-mission-state="waiting">Waiting</button>
+            <button class="mission-facet-filter" data-mission-state="completed">Completed</button>
+          </div>
           <input id="mission-search" type="search" placeholder="Filter task, agent, project, or current step…" />
           <select id="mission-sort" title="Sort Mission Control cards">
             <option value="attention">Attention first</option>
@@ -3359,7 +3407,9 @@
   }
 
   // ---------- Mission Control ----------
-  let missionFilter = "all";
+  const missionLifecycles = new Set(["active"]);
+  const missionMarkers = new Set();
+  const missionStates = new Set();
   let missionView = "timeline";
   let missionTimelineData = null;
   let missionTimelineRequest = 0;
@@ -3393,6 +3443,43 @@
     return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
 
+  function missionMarker(item) {
+    const marker = String(item?.panel_state || item?.priority || "").toLowerCase();
+    return ["p0", "p1", "p2", "flag"].includes(marker) ? marker : "";
+  }
+
+  function missionLifecycleMatches(alive) {
+    if (!missionLifecycles.size) return true;
+    return missionLifecycles.has(alive ? "active" : "ended");
+  }
+
+  function missionMarkerMatches(item) {
+    return !missionMarkers.size || missionMarkers.has(missionMarker(item));
+  }
+
+  function missionStateMatches(state, needsAttention = false) {
+    if (!missionStates.size) return true;
+    return missionStates.has(state)
+      || (missionStates.has("attention") && needsAttention);
+  }
+
+  function updateMissionFacetControls() {
+    [
+      ["lifecycle", missionLifecycles],
+      ["marker", missionMarkers],
+      ["state", missionStates],
+    ].forEach(([facet, selectedValues]) => {
+      document.querySelectorAll(`[data-mission-${facet}]`).forEach(btn => {
+        const value = btn.getAttribute(`data-mission-${facet}`) || "all";
+        const selected = value === "all"
+          ? selectedValues.size === 0
+          : selectedValues.has(value);
+        btn.classList.toggle("on", selected);
+        btn.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+    });
+  }
+
   function setMissionView(view, { refresh = true } = {}) {
     missionView = view === "board" ? "board" : "timeline";
     $("mission-timeline-view").hidden = missionView !== "timeline";
@@ -3419,10 +3506,13 @@
       root.innerHTML = "<strong>No sessions match the current filter.</strong>";
       return;
     }
-    const workingNow = rows.filter(row => row.current_state === "working").length;
-    const waitingNow = rows.filter(row => row.current_state === "waiting").length;
+    const workingNow = rows.filter(row => row.alive !== false && row.current_state === "working").length;
+    const waitingNow = rows.filter(row => row.alive !== false && row.current_state === "waiting").length;
+    const endedNow = rows.filter(row => row.alive === false).length;
     const attentionNow = rows.filter(row =>
-      ["blocked", "needs_input"].includes(row.current_state)
+      row.alive !== false && (
+        row.needs_attention || ["blocked", "needs_input"].includes(row.current_state)
+      )
     ).length;
     const workingSeconds = rows.reduce(
       (total, row) => total + Number(row.working_s || 0), 0
@@ -3456,7 +3546,8 @@
     root.innerHTML =
       '<strong><span class="working">' + workingNow + " working now</span> across "
       + rows.length + " sessions</strong>"
-      + "<span>" + waitingNow + " waiting" + attentionSummary + "</span>"
+      + "<span>" + waitingNow + " waiting · " + endedNow + " ended"
+      + attentionSummary + "</span>"
       + "<span>" + utilization + "% active during "
       + escapeHtml(selectedWindow.toLowerCase()) + "</span>"
       + "<span>" + formatMissionCount(requests) + " requests · "
@@ -3479,16 +3570,24 @@
     const span = Math.max(1, end - start);
     const query = String($("mission-timeline-search").value || "").trim().toLowerCase();
     let rows = data.sessions.filter(row => {
+      const alive = row.alive !== false;
+      const state = alive ? row.current_state : "ended";
+      if (!missionLifecycleMatches(alive)) return false;
+      if (!missionMarkerMatches(row)) return false;
+      if (!missionStateMatches(state, Boolean(row.needs_attention))) return false;
       if (!query) return true;
-      return [row.display_name, row.agent, row.priority, row.current_state]
+      return [
+        row.display_name, row.agent, missionMarker(row), state,
+        alive ? "active" : "ended",
+      ]
         .filter(Boolean).join(" ").toLowerCase().includes(query);
     });
-    const priorityRank = { p0: 0, p1: 1, p2: 2, "": 3 };
+    const priorityRank = { p0: 0, p1: 1, p2: 2, flag: 3, "": 4 };
     const sort = $("mission-timeline-sort").value || "active";
     rows.sort((a, b) => {
       if (sort === "name") return String(a.display_name).localeCompare(String(b.display_name));
       if (sort === "priority") {
-        return (priorityRank[a.priority || ""] ?? 9) - (priorityRank[b.priority || ""] ?? 9)
+        return (priorityRank[missionMarker(a)] ?? 9) - (priorityRank[missionMarker(b)] ?? 9)
           || Number(b.current_streak_s || 0) - Number(a.current_streak_s || 0);
       }
       if (sort === "active") return Number(b.working_s || 0) - Number(a.working_s || 0);
@@ -3523,11 +3622,13 @@
         const title = `${missionStateLabel(state)} · ${formatMissionDuration(segment.duration_s)} · ${new Date(segStart * 1000).toLocaleString()} – ${new Date(segEnd * 1000).toLocaleString()}`;
         return `<span class="mission-timeline-segment ${escapeHtml(state)}" style="left:${left}%;width:${width}%" title="${escapeHtml(title)}"></span>`;
       }).join("");
-      const current = missionStateLabel(row.current_state);
+      const lifecycleState = row.alive === false ? "ended" : row.current_state;
+      const current = missionStateLabel(lifecycleState);
       const currentDuration = formatMissionDuration(row.current_streak_s);
       const unknown = Number(row.unknown_s || 0);
       const completed = Number(row.completed_s || 0);
       const display = row.display_name || row.tmux_session || row.run_id;
+      const marker = missionMarker(row);
       const conversation = row.conversation_metrics || {};
       const windowMetrics = conversation.window || {};
       const totalMetrics = conversation.conversation || {};
@@ -3550,15 +3651,15 @@
         : "No native transcript matched";
       return `<div class="mission-gantt-row" data-run-id="${escapeHtml(row.run_id)}" title="Selected window: ${escapeHtml(windowSummary)}&#10;Conversation total: ${escapeHtml(totalSummary)}">
         <div class="mission-gantt-label mission-timeline-open" data-run-id="${escapeHtml(row.run_id)}" title="Open ${escapeHtml(display)}">
-          <span class="mission-badge ${escapeHtml(row.current_state)}">${escapeHtml(current)}</span>
+          <span class="mission-badge ${escapeHtml(lifecycleState)}">${escapeHtml(current)}</span>
           <span class="mission-gantt-name">${escapeHtml(display)}</span>
-          ${row.priority ? `<span class="mission-badge priority">${escapeHtml(String(row.priority).toUpperCase())}</span>` : ""}
+          ${marker ? `<span class="mission-badge priority">${escapeHtml(marker.toUpperCase())}</span>` : ""}
         </div>
         <div class="mission-gantt-track">${segments}${requestMarkers}<span class="mission-now-line"></span>
           <div class="mission-conversation-tooltip"><strong>Selected window</strong><br>${escapeHtml(windowSummary)}<br><span style="color:var(--text-dim)">Conversation total: ${escapeHtml(totalSummary)}</span></div>
         </div>
         <div class="mission-gantt-metrics">
-          <strong>Now: ${escapeHtml(current)} ${escapeHtml(currentDuration)}</strong>
+          <strong>${row.alive === false ? "Ended" : `Now: ${escapeHtml(current)} ${escapeHtml(currentDuration)}`}</strong>
           <span>active ${escapeHtml(formatMissionDuration(row.working_s))} · idle ${escapeHtml(formatMissionDuration(row.idle_s))} · ${Number(row.utilization || 0).toFixed(0)}% active${completed ? ` · done ${escapeHtml(formatMissionDuration(completed))}` : ""}${unknown ? ` · ${escapeHtml(formatMissionDuration(unknown))} unobserved` : ""}</span>
           <span>${escapeHtml(windowSummary)}</span>
           <span class="mission-utilization"><span style="width:${Math.max(0, Math.min(100, Number(row.utilization || 0)))}%"></span></span>
@@ -3571,8 +3672,9 @@
   async function refreshMissionTimeline() {
     const request = ++missionTimelineRequest;
     const hours = Number($("mission-timeline-hours").value || 0.25);
+    const includeEnded = !missionLifecycles.size || missionLifecycles.has("ended");
     try {
-      const data = await api(`/api/mission-control/timeline?hours=${encodeURIComponent(hours)}`);
+      const data = await api(`/api/mission-control/timeline?hours=${encodeURIComponent(hours)}&include_ended=${includeEnded ? "true" : "false"}`);
       if (request !== missionTimelineRequest) return;
       missionTimelineData = data;
       if (missionView === "timeline") renderMissionTimeline();
@@ -3583,9 +3685,9 @@
     }
   }
 
-  function missionRows() {
+  function missionRows({ includeEnded = false } = {}) {
     return sessions.filter(s => {
-      if (!s || !s.alive) return false;
+      if (!s || (!includeEnded && !s.alive)) return false;
       if (s.monitor_role === "supervisor") return false;
       return !String(s.display_name || s.task || "").toLowerCase()
         .startsWith("mission-control-supervisor");
@@ -3594,11 +3696,14 @@
 
   function missionInfo(s) {
     const raw = s.mission_control || {};
-    const state = raw.state || (s.busy ? "working" : "waiting");
+    const alive = s.alive !== false;
+    const state = alive ? (raw.state || (s.busy ? "working" : "waiting")) : "ended";
     return {
       state,
       priority: raw.priority || (["p0", "p1", "p2"].includes(s.panel_state) ? s.panel_state : ""),
-      needs_attention: raw.needs_attention === true,
+      marker: missionMarker(s),
+      lifecycle: alive ? "active" : "ended",
+      needs_attention: alive && raw.needs_attention === true,
       attention_reason: raw.attention_reason || "",
       activity_mode: raw.activity_mode || (s.busy ? "busy" : "idle"),
       activity_age_s: Number(raw.activity_age_s || 0),
@@ -3615,6 +3720,7 @@
       needs_input: "Needs input",
       blocked: "Blocked",
       completed: "Completed",
+      ended: "Ended",
     })[state] || state || "Unknown";
   }
 
@@ -3633,38 +3739,42 @@
   function renderMissionControl() {
     const modal = $("mission-modal");
     if (!modal) return;
-    const all = missionRows();
-    const infos = new Map(all.map(s => [s.run_id, missionInfo(s)]));
+    const available = missionRows({ includeEnded: true });
+    const infos = new Map(available.map(s => [s.run_id, missionInfo(s)]));
+    const all = available.filter(s => {
+      const mc = infos.get(s.run_id);
+      return missionLifecycleMatches(s.alive !== false)
+        && missionMarkerMatches(s)
+        && missionStateMatches(mc.state, mc.needs_attention);
+    });
     const working = all.filter(s => infos.get(s.run_id).state === "working").length;
     const attention = all.filter(s => infos.get(s.run_id).needs_attention).length;
     const blocked = all.filter(s => ["blocked", "needs_input"].includes(infos.get(s.run_id).state)).length;
     const waiting = all.filter(s => infos.get(s.run_id).state === "waiting").length;
     const completed = all.filter(s => infos.get(s.run_id).state === "completed").length;
+    const ended = all.filter(s => infos.get(s.run_id).state === "ended").length;
     $("mission-active-count").textContent = String(all.length);
     $("mission-working-count").textContent = String(working);
     $("mission-attention-count").textContent = String(attention);
     $("mission-blocked-count").textContent = String(blocked);
     $("mission-waiting-count").textContent = String(waiting);
     $("mission-completed-count").textContent = String(completed);
+    $("mission-ended-count").textContent = String(ended);
 
     const query = String($("mission-search").value || "").trim().toLowerCase();
     let rows = all.filter(s => {
       const mc = infos.get(s.run_id);
-      if (missionFilter === "attention" && !mc.needs_attention) return false;
-      if (missionFilter === "working" && mc.state !== "working") return false;
-      if (missionFilter === "waiting" && mc.state !== "waiting") return false;
-      if (missionFilter === "completed" && mc.state !== "completed") return false;
       if (!query) return true;
       const p = mc.progress || {};
       const bag = [
         s.display_name, s.task, s.agent, s.cwd, s.panel_state,
-        p.headline, p.evidence, mc.state,
+        p.headline, p.evidence, mc.state, mc.lifecycle, mc.marker,
       ].filter(Boolean).join(" ").toLowerCase();
       return query.split(/\s+/).every(part => bag.includes(part));
     });
 
-    const priorityRank = { p0: 0, p1: 1, p2: 2, "": 3 };
-    const stateRank = { blocked: 0, needs_input: 1, working: 2, waiting: 3, completed: 4 };
+    const priorityRank = { p0: 0, p1: 1, p2: 2, flag: 3, "": 4 };
+    const stateRank = { blocked: 0, needs_input: 1, working: 2, waiting: 3, completed: 4, ended: 5 };
     const sort = $("mission-sort").value || "attention";
     rows.sort((a, b) => {
       const ma = infos.get(a.run_id), mb = infos.get(b.run_id);
@@ -3710,7 +3820,7 @@
           <div class="mission-card-head">
             <span class="dot ${dotClass(s)}${s.busy ? " busy" : ""}"></span>
             <span class="mission-card-title" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
-            ${mc.priority ? `<span class="mission-badge priority">${escapeHtml(mc.priority.toUpperCase())}</span>` : ""}
+            ${mc.marker ? `<span class="mission-badge priority">${escapeHtml(mc.marker.toUpperCase())}</span>` : ""}
             <span class="mission-badge ${escapeHtml(mc.state)}">${escapeHtml(missionStateLabel(mc.state))}</span>
           </div>
           <div class="mission-headline">${escapeHtml(p.headline || "No recent task output")}</div>
@@ -3735,6 +3845,7 @@
 
   function openMissionControl() {
     $("mission-modal").hidden = false;
+    updateMissionFacetControls();
     setMissionView(missionView);
   }
 
@@ -3764,15 +3875,23 @@
   document.querySelectorAll("[data-mission-view]").forEach(btn => {
     btn.addEventListener("click", () => setMissionView(btn.dataset.missionView));
   });
-  document.querySelectorAll(".mission-filter").forEach(btn => {
-    btn.addEventListener("click", () => {
-      missionFilter = btn.dataset.missionFilter || "all";
-      document.querySelectorAll(".mission-filter").forEach(node => {
-        node.classList.toggle("on", node === btn);
+  function bindMissionFacet(facet, selectedValues, { refreshTimeline = false } = {}) {
+    document.querySelectorAll(`[data-mission-${facet}]`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        const value = btn.getAttribute(`data-mission-${facet}`) || "all";
+        if (value === "all") selectedValues.clear();
+        else if (selectedValues.has(value)) selectedValues.delete(value);
+        else selectedValues.add(value);
+        updateMissionFacetControls();
+        renderMissionControl();
+        if (refreshTimeline) refreshMissionTimeline();
+        else renderMissionTimeline();
       });
-      renderMissionControl();
     });
-  });
+  }
+  bindMissionFacet("lifecycle", missionLifecycles, { refreshTimeline: true });
+  bindMissionFacet("marker", missionMarkers);
+  bindMissionFacet("state", missionStates);
   function openMissionSessionZoomSoon(runId) {
     requestAnimationFrame(() => {
       const ctrl = paneCtrls.get(runId);

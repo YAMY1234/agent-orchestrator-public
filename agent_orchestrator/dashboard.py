@@ -3884,6 +3884,8 @@ def _record_activity_timeline_snapshot(
                     resume.get("source_path") or run.get("resume_source_path") or ""
                 ),
                 "priority": str(mission.get("priority") or "")[:16],
+                "panel_state": str(run.get("panel_state") or "")[:16],
+                "needs_attention": bool(mission.get("needs_attention")),
                 "alive": True,
                 "current_state": state,
                 "last_seen_at": sample_ts,
@@ -3968,6 +3970,7 @@ def _flush_activity_timeline(outputs_dir: Path) -> None:
 
 def _activity_timeline_payload(
     outputs_dir: Path, *, hours: float = 6.0, now: float | None = None,
+    include_ended: bool = False,
 ) -> dict[str, Any]:
     end_ts = float(now if now is not None else time.time())
     clamped_hours = min(168.0, max(0.25, float(hours)))
@@ -3976,7 +3979,10 @@ def _activity_timeline_payload(
     with _ACTIVITY_TIMELINE_LOCK:
         data = _load_activity_timeline_unlocked(outputs_dir)
         for entry in data.get("sessions", {}).values():
-            if not isinstance(entry, dict) or not entry.get("alive"):
+            if not isinstance(entry, dict):
+                continue
+            alive = bool(entry.get("alive"))
+            if not alive and not include_ended:
                 continue
             clipped: list[dict[str, Any]] = []
             totals: dict[str, float] = {
@@ -4000,6 +4006,8 @@ def _activity_timeline_payload(
                     "end": round(seg_end, 3),
                     "duration_s": round(duration, 1),
                 })
+            if not alive and not clipped:
+                continue
             observed = sum(
                 value for state, value in totals.items() if state != "unknown"
             )
@@ -4020,6 +4028,9 @@ def _activity_timeline_payload(
                 "display_name": entry.get("display_name", ""),
                 "agent": entry.get("agent", ""),
                 "priority": entry.get("priority", ""),
+                "panel_state": entry.get("panel_state", ""),
+                "needs_attention": bool(entry.get("needs_attention")),
+                "alive": alive,
                 "current_state": entry.get("current_state", "waiting"),
                 "current_streak_s": round(current_streak, 1),
                 "working_s": round(working, 1),
@@ -7001,10 +7012,13 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     @app.get("/api/mission-control/timeline")
     def mission_control_timeline(
         hours: float = Query(0.25, ge=0.25, le=168.0),
+        include_ended: bool = Query(False),
     ):
         return _attach_conversation_metrics(
             outputs_dir,
-            _activity_timeline_payload(outputs_dir, hours=hours),
+            _activity_timeline_payload(
+                outputs_dir, hours=hours, include_ended=include_ended,
+            ),
         )
 
     @app.get("/api/sessions")
