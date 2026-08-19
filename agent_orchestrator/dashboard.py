@@ -50,7 +50,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -123,7 +123,13 @@ for _key in (
 
 from .agent_titles import TitleCache
 _TITLE_CACHE = TitleCache(ttl_seconds=600.0)
-_CONVERSATION_METRICS = TranscriptMetricsCache()
+_CONVERSATION_METRICS = TranscriptMetricsCache(
+    cache_dir=Path(
+        os.environ.get("ORCH_CONVERSATION_METRICS_CACHE")
+        or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        / "agent-orchestrator" / "conversation-metrics"
+    )
+)
 _CONVERSATION_METRICS_POOL = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="orch-transcript-metrics",
 )
@@ -193,6 +199,7 @@ _ACTIVITY_TIMELINES: dict[str, dict[str, Any]] = {}
 _ACTIVITY_TIMELINE_LAST_WRITE: dict[str, float] = {}
 _ACTIVITY_TIMELINE_LAST_SAMPLE: dict[str, float] = {}
 _ACTIVITY_TIMELINE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_ACTIVITY_DAILY_RETENTION_DAYS = 365
 _ACTIVITY_TIMELINE_WRITE_INTERVAL_SECONDS = 15.0
 _ACTIVITY_TIMELINE_GAP_SECONDS = 30.0
 _ACTIVITY_TIMELINE_STATES = {
@@ -3780,6 +3787,54 @@ def _activity_timeline_path(outputs_dir: Path) -> Path:
     return outputs_dir / ".activity_timeline.json"
 
 
+def _split_local_days(start: float, end: float):
+    """Yield ``(YYYY-MM-DD, seconds)`` across local midnight boundaries."""
+    cursor = float(start)
+    end = float(end)
+    while cursor < end:
+        current = datetime.fromtimestamp(cursor)
+        next_day = (current + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        boundary = min(end, time.mktime(next_day.timetuple()))
+        if boundary <= cursor:
+            break
+        yield current.strftime("%Y-%m-%d"), boundary - cursor
+        cursor = boundary
+
+
+def _refresh_activity_daily_busy(
+    entry: dict[str, Any], *, cutoff: float, now: float,
+) -> None:
+    """Preserve long-lived daily busy totals while raw segments stay compact."""
+    daily = entry.get("daily_busy")
+    if not isinstance(daily, dict):
+        daily = {}
+    derived: dict[str, float] = {}
+    for segment in entry.get("segments", []):
+        if not isinstance(segment, dict) or segment.get("state") != "working":
+            continue
+        start = float(segment.get("start") or 0.0)
+        end = float(segment.get("end") or 0.0)
+        if end <= start:
+            continue
+        for day, seconds in _split_local_days(start, end):
+            derived[day] = derived.get(day, 0.0) + seconds
+    cutoff_day = datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d")
+    for day, seconds in derived.items():
+        # The oldest retained day may be only a partial segment window. Keep
+        # its previously completed rollup instead of replacing it with less.
+        if day > cutoff_day or day not in daily:
+            daily[day] = round(seconds, 1)
+    oldest = (datetime.fromtimestamp(now) - timedelta(
+        days=_ACTIVITY_DAILY_RETENTION_DAYS
+    )).strftime("%Y-%m-%d")
+    entry["daily_busy"] = {
+        day: value for day, value in daily.items()
+        if isinstance(day, str) and day >= oldest
+    }
+
+
 def _load_activity_timeline_unlocked(outputs_dir: Path) -> dict[str, Any]:
     key = str(outputs_dir.resolve())
     cached = _ACTIVITY_TIMELINES.get(key)
@@ -3939,11 +3994,31 @@ def _record_activity_timeline_snapshot(
             if not isinstance(entry, dict) or session in seen:
                 continue
             entry["alive"] = False
+        for entry in sessions.values():
+            if isinstance(entry, dict):
+                _refresh_activity_daily_busy(
+                    entry, cutoff=cutoff, now=sample_ts,
+                )
         for session in list(sessions):
             entry = sessions.get(session)
             segments = entry.get("segments", []) if isinstance(entry, dict) else []
-            if (not isinstance(segments, list) or not segments
-                    or float(segments[-1].get("end") or 0.0) < cutoff):
+            last_segment_end = (
+                float(segments[-1].get("end") or 0.0)
+                if isinstance(segments, list) and segments
+                and isinstance(segments[-1], dict) else 0.0
+            )
+            if last_segment_end >= cutoff:
+                continue
+            daily = entry.get("daily_busy", {}) if isinstance(entry, dict) else {}
+            if isinstance(entry, dict):
+                entry["segments"] = []
+            history_cutoff = sample_ts - _ACTIVITY_DAILY_RETENTION_DAYS * 86400
+            last_seen = (
+                float(entry.get("last_seen_at") or 0.0)
+                if isinstance(entry, dict) else 0.0
+            )
+            if ((not isinstance(daily, dict) or not daily)
+                    and last_seen < history_cutoff):
                 sessions.pop(session, None)
         data["last_sample_at"] = sample_ts
         _ACTIVITY_TIMELINE_LAST_SAMPLE[key] = sample_ts
@@ -4124,22 +4199,37 @@ def _attach_conversation_metrics(
 
     def collect(row: dict[str, Any]) -> dict[str, Any]:
         source = source_by_session.get(str(row.get("tmux_session") or ""), {})
+        row_resume = row.get("resume")
+        row_resume = row_resume if isinstance(row_resume, dict) else {}
         run = {
-            "agent": source.get("resume_agent") or source.get("agent") or row.get("agent"),
-            "cwd": source.get("cwd", ""),
-            "started_at": source.get("started_at", ""),
-            "resume_id": source.get("resume_id", ""),
-            "resume_source_path": source.get("resume_source_path", ""),
+            "agent": (
+                source.get("resume_agent") or source.get("agent")
+                or row_resume.get("agent") or row.get("agent")
+            ),
+            "cwd": source.get("cwd") or row.get("cwd", ""),
+            "started_at": source.get("started_at") or row.get("started_at", ""),
+            "resume_id": (
+                source.get("resume_id") or row_resume.get("id")
+                or row.get("resume_id", "")
+            ),
+            "resume_source_path": (
+                source.get("resume_source_path") or row_resume.get("source_path")
+                or row.get("resume_source_path", "")
+            ),
         }
         path = _conversation_transcript_path(run)
         if not path:
             return {"available": False}
-        return _conversation_metrics_snapshot(
+        stats = _conversation_metrics_snapshot(
             path,
             str(run.get("agent") or ""),
             window_start=window_start,
             window_end=window_end,
         )
+        stats["source_id"] = hashlib.sha256(
+            f"{path}\0{str(run.get('agent') or '').lower()}".encode("utf-8")
+        ).hexdigest()[:20]
+        return stats
 
     workers = min(6, len(rows))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -4149,58 +4239,193 @@ def _attach_conversation_metrics(
     return payload
 
 
-def _local_today_start(now: float | None = None) -> tuple[float, str]:
+def _mission_date_range(
+    start_raw: str, end_raw: str, *, now: float | None = None,
+) -> tuple[str, str, float, float, list[str]]:
     current = datetime.fromtimestamp(float(now if now is not None else time.time()))
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    # mktime applies the machine's local timezone and DST rules, matching the
-    # timestamps shown elsewhere in Mission Control.
-    return time.mktime(start.timetuple()), start.strftime("%Y-%m-%d")
+    today = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        start = datetime.strptime(str(start_raw), "%Y-%m-%d")
+        end = datetime.strptime(str(end_raw), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("dates must use YYYY-MM-DD") from exc
+    if end > today:
+        end = today
+    if start > end:
+        raise ValueError("start date must not be after end date")
+    day_count = (end.date() - start.date()).days + 1
+    if day_count > _ACTIVITY_DAILY_RETENTION_DAYS:
+        raise ValueError(
+            f"date range cannot exceed {_ACTIVITY_DAILY_RETENTION_DAYS} days"
+        )
+    days = [
+        (start + timedelta(days=index)).strftime("%Y-%m-%d")
+        for index in range(day_count)
+    ]
+    start_ts = time.mktime(start.timetuple())
+    end_ts = time.mktime((end + timedelta(days=1)).timetuple())
+    return days[0], days[-1], start_ts, end_ts, days
 
 
-def _mission_daily_summary(payload: dict[str, Any], *, date: str) -> dict[str, Any]:
-    rows = payload.get("sessions")
-    rows = rows if isinstance(rows, list) else []
-    busy_s = sum(float(row.get("working_s") or 0.0) for row in rows)
-    requests = 0
-    request_tokens = 0
-    generated_tokens = 0
-    available = 0
-    token_usage_available = 0
-    loading = 0
-    for row in rows:
+def _mission_analytics_payload(
+    outputs_dir: Path, *, start_day: str, end_day: str,
+    run_ids: set[str] | None = None,
+    session_runs: list[dict[str, Any]] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    start_day, end_day, start_ts, end_ts, days = _mission_date_range(
+        start_day, end_day, now=now,
+    )
+    day_set = set(days)
+    series = {
+        day: {
+            "date": day,
+            "busy_s": 0.0,
+            "requests": 0,
+            "request_tokens": 0,
+            "generated_tokens": 0,
+            "token_usage_available": False,
+        }
+        for day in days
+    }
+    with _ACTIVITY_TIMELINE_LOCK:
+        data = _load_activity_timeline_unlocked(outputs_dir)
+        entries = [
+            dict(entry)
+            for entry in data.get("sessions", {}).values()
+            if isinstance(entry, dict)
+            and (
+                run_ids is None
+                or str(entry.get("run_id") or "") in run_ids
+            )
+        ]
+    known_run_ids = {str(entry.get("run_id") or "") for entry in entries}
+    for run in session_runs or []:
+        run_id = str(run.get("run_id") or "")
+        if (not run_id or run_id in known_run_ids
+                or (run_ids is not None and run_id not in run_ids)):
+            continue
+        resume = run.get("resume")
+        resume = dict(resume) if isinstance(resume, dict) else {}
+        entries.append({
+            "run_id": run_id,
+            "tmux_session": str(run.get("tmux_session") or ""),
+            "agent": str(run.get("agent") or ""),
+            "cwd": str(run.get("cwd") or ""),
+            "started_at": str(run.get("started_at") or ""),
+            "resume": resume,
+            "resume_id": str(run.get("resume_id") or ""),
+            "resume_source_path": str(run.get("resume_source_path") or ""),
+            "daily_busy": {},
+            "segments": [],
+        })
+        known_run_ids.add(run_id)
+
+    conversation_rows: list[dict[str, Any]] = []
+    for entry in entries:
+        daily_busy = entry.get("daily_busy")
+        daily_busy = dict(daily_busy) if isinstance(daily_busy, dict) else {}
+        # Older timeline files do not have rollups yet. Derive every still
+        # retained day so the trend is useful immediately after upgrading.
+        derived: dict[str, float] = {}
+        for segment in entry.get("segments", []):
+            if not isinstance(segment, dict) or segment.get("state") != "working":
+                continue
+            seg_start = max(start_ts, float(segment.get("start") or 0.0))
+            seg_end = min(end_ts, float(segment.get("end") or 0.0))
+            if seg_end <= seg_start:
+                continue
+            for day, seconds in _split_local_days(seg_start, seg_end):
+                derived[day] = derived.get(day, 0.0) + seconds
+        for day in day_set:
+            value = daily_busy.get(day, derived.get(day, 0.0))
+            try:
+                series[day]["busy_s"] += float(value or 0.0)
+            except (TypeError, ValueError):
+                pass
+        conversation_rows.append({
+            "run_id": str(entry.get("run_id") or ""),
+            "tmux_session": str(entry.get("tmux_session") or ""),
+            "agent": str(entry.get("agent") or ""),
+            "cwd": str(entry.get("cwd") or ""),
+            "started_at": str(entry.get("started_at") or ""),
+            "resume": entry.get("resume", {}),
+            "resume_id": str(entry.get("resume_id") or ""),
+            "resume_source_path": str(entry.get("resume_source_path") or ""),
+        })
+
+    conversation_payload = _attach_conversation_metrics(
+        outputs_dir,
+        {
+            "window_start": start_ts,
+            "window_end": end_ts,
+            "sessions": conversation_rows,
+        },
+    )
+    seen_sources: set[str] = set()
+    available_sources = 0
+    loading_sources = 0
+    for row in conversation_payload.get("sessions", []):
         metrics = row.get("conversation_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
+        source_id = str(metrics.get("source_id") or "")
+        if source_id and source_id in seen_sources:
+            continue
+        if source_id:
+            seen_sources.add(source_id)
         if metrics.get("loading"):
-            loading += 1
+            loading_sources += 1
+            continue
         if not metrics.get("available"):
             continue
-        available += 1
+        available_sources += 1
         window = metrics.get("window")
         window = window if isinstance(window, dict) else {}
-        requests += int(window.get("requests") or 0)
-        request_tokens += int(window.get("request_tokens") or 0)
-        if window.get("token_usage_available"):
-            token_usage_available += 1
-            generated_tokens += int(window.get("generated_tokens") or 0)
-    return {
-        "date": date,
-        "window_start": payload.get("window_start"),
-        "window_end": payload.get("window_end"),
-        # Busy time is summed across sessions (agent-time), so two agents
-        # working for one hour contribute two busy hours.
-        "busy_s": round(busy_s, 1),
-        "busy_time_mode": "sum_across_sessions",
-        "requests": requests,
-        "request_tokens": request_tokens,
+        for bucket in window.get("daily", []):
+            if not isinstance(bucket, dict):
+                continue
+            day = str(bucket.get("date") or "")
+            if day not in series:
+                continue
+            series[day]["requests"] += int(bucket.get("requests") or 0)
+            series[day]["request_tokens"] += int(
+                bucket.get("request_tokens") or 0
+            )
+            if bucket.get("token_usage_available"):
+                series[day]["token_usage_available"] = True
+                series[day]["generated_tokens"] += int(
+                    bucket.get("generated_tokens") or 0
+                )
+
+    rows = []
+    for day in days:
+        row = series[day]
+        row["busy_s"] = round(float(row["busy_s"]), 1)
+        if not row["token_usage_available"]:
+            row["generated_tokens"] = None
+        rows.append(row)
+    totals = {
+        "busy_s": round(sum(float(row["busy_s"]) for row in rows), 1),
+        "requests": sum(int(row["requests"]) for row in rows),
+        "request_tokens": sum(int(row["request_tokens"]) for row in rows),
         "request_tokens_estimated": True,
         "generated_tokens": (
-            generated_tokens if token_usage_available else None
+            sum(int(row["generated_tokens"] or 0) for row in rows)
+            if any(row["generated_tokens"] is not None for row in rows)
+            else None
         ),
-        "sessions": len(rows),
-        "metrics_available_sessions": available,
-        "token_usage_available_sessions": token_usage_available,
-        "metrics_loading_sessions": loading,
-        "partial": available < len(rows),
+    }
+    return {
+        "start_date": start_day,
+        "end_date": end_day,
+        "days": len(days),
+        "session_count": len(entries),
+        "source_count": len(seen_sources),
+        "metrics_available_sources": available_sources,
+        "metrics_loading_sources": loading_sources,
+        "partial": loading_sources > 0,
+        "totals": totals,
+        "series": rows,
     }
 
 
@@ -6887,6 +7112,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 "enabled": True,
                 "sample_interval_seconds": 10.0,
                 "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
+                "daily_retention_days": _ACTIVITY_DAILY_RETENTION_DAYS,
             },
             "session_snapshot": {
                 key: snapshot[key]
@@ -7192,25 +7418,40 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         include_ended: bool = Query(False),
     ):
         now = time.time()
-        payload = _attach_conversation_metrics(
+        # Conversation indexing is deliberately non-blocking: a cold parse of
+        # a multi-gigabyte transcript must never delay the activity timeline.
+        return _attach_conversation_metrics(
             outputs_dir,
             _activity_timeline_payload(
                 outputs_dir, hours=hours, now=now,
                 include_ended=include_ended,
             ),
         )
-        day_start, day = _local_today_start(now)
-        daily_payload = _attach_conversation_metrics(
-            outputs_dir,
-            _activity_timeline_payload(
+
+    @app.post("/api/mission-control/analytics")
+    def mission_control_analytics(body: dict[str, Any]):
+        today = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d")
+        start_day = str(body.get("start_date") or today)
+        end_day = str(body.get("end_date") or today)
+        raw_run_ids = body.get("run_ids")
+        run_ids: set[str] | None = None
+        if raw_run_ids is not None:
+            if not isinstance(raw_run_ids, list):
+                raise HTTPException(400, "run_ids must be a list")
+            run_ids = {
+                str(value) for value in raw_run_ids
+                if isinstance(value, str) and value
+            }
+        try:
+            return _mission_analytics_payload(
                 outputs_dir,
-                now=now,
-                include_ended=True,
-                window_start=day_start,
-            ),
-        )
-        payload["daily"] = _mission_daily_summary(daily_payload, date=day)
-        return payload
+                start_day=start_day,
+                end_day=end_day,
+                run_ids=run_ids,
+                session_runs=session_snapshots.snapshot()["sessions"],
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/sessions")
     def list_sessions():

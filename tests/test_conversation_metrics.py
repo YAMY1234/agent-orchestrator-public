@@ -13,6 +13,78 @@ def _append(path: Path, *records: dict) -> None:
 
 
 class ConversationMetricsTests(unittest.TestCase):
+    def test_ready_probe_never_waits_for_an_active_indexer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "busy.jsonl"
+            path.write_text("")
+            cache = TranscriptMetricsCache()
+            state = cache._state(path, "codex")
+            state.lock.acquire()
+            try:
+                self.assertFalse(cache.is_ready(path, "codex"))
+            finally:
+                state.lock.release()
+
+    def test_persistent_index_restores_offset_and_builds_daily_buckets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "codex.jsonl"
+            cache_dir = root / "cache"
+            _append(
+                path,
+                {
+                    "timestamp": "2026-08-09T10:01:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message", "role": "user", "id": "u1",
+                        "content": [{"type": "input_text", "text": "hello"}],
+                    },
+                },
+                {
+                    "timestamp": "2026-08-09T10:01:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {"total_token_usage": {
+                            "input_tokens": 6, "output_tokens": 4,
+                            "total_tokens": 10,
+                        }},
+                    },
+                },
+            )
+            first = TranscriptMetricsCache(cache_dir=cache_dir)
+            first_stats = first.snapshot(
+                path, "codex", window_start=0, window_end=2_000_000_000,
+            )
+            first_size = path.stat().st_size
+            self.assertEqual(first_stats["window"]["daily"][0]["requests"], 1)
+            self.assertEqual(
+                first_stats["window"]["daily"][0]["generated_tokens"], 4,
+            )
+            cache_files = list(cache_dir.glob("*.json"))
+            self.assertEqual(len(cache_files), 1)
+            self.assertNotIn("hello", cache_files[0].read_text())
+
+            restored = TranscriptMetricsCache(cache_dir=cache_dir)
+            self.assertTrue(restored.is_ready(path, "codex"))
+            self.assertEqual(restored._state(path, "codex").offset, first_size)
+            _append(path, {
+                "timestamp": "2026-08-10T10:02:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "user", "id": "u2",
+                    "content": [{"type": "input_text", "text": "second"}],
+                },
+            })
+            stats = restored.snapshot(
+                path, "codex", window_start=0, window_end=2_000_000_000,
+            )
+            self.assertEqual(stats["window"]["requests"], 2)
+            self.assertEqual(
+                [row["date"] for row in stats["window"]["daily"]],
+                ["2026-08-09", "2026-08-10"],
+            )
+
     def test_codex_filters_noise_and_uses_cumulative_token_deltas(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "codex.jsonl"

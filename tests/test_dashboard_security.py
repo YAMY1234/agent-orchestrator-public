@@ -339,6 +339,38 @@ class SessionSnapshotTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class ConversationMetricBackgroundTests(unittest.TestCase):
+    def test_followup_snapshot_does_not_wait_for_cold_background_parse(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowCache(dashboard.TranscriptMetricsCache):
+            def _update(self, path, agent, state):
+                entered.set()
+                release.wait(2)
+                state.initialized = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "large.jsonl"
+            path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+            cache = SlowCache()
+            with patch.object(dashboard, "_CONVERSATION_METRICS", cache):
+                first = dashboard._conversation_metrics_snapshot(
+                    path, "codex", window_start=0, window_end=time.time(),
+                )
+                self.assertTrue(first["loading"])
+                self.assertTrue(entered.wait(1))
+                started = time.monotonic()
+                second = dashboard._conversation_metrics_snapshot(
+                    path, "codex", window_start=0, window_end=time.time(),
+                )
+                elapsed = time.monotonic() - started
+                release.set()
+
+            self.assertTrue(second["loading"])
+            self.assertLess(elapsed, 0.1)
+
+
 class DashboardAuthenticationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -384,6 +416,16 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertNotIn(
                 "/tty/{session}/{subpath}", schema.get("paths", {})
             )
+
+            today = time.strftime("%Y-%m-%d")
+            analytics = client.post("/api/mission-control/analytics", json={
+                "start_date": today,
+                "end_date": today,
+                "run_ids": [],
+            })
+            self.assertEqual(analytics.status_code, 200)
+            self.assertEqual(analytics.json()["days"], 1)
+            self.assertEqual(analytics.json()["series"][0]["date"], today)
 
     def test_tty_websocket_rejects_missing_token(self):
         with TestClient(self.app) as client:
@@ -998,54 +1040,94 @@ Please approve the remote login
             persisted = (outputs / ".activity_timeline.json").read_text()
             self.assertNotIn("terminal", persisted.lower())
 
-    def test_mission_daily_summary_aggregates_agent_time_and_conversation(self):
-        payload = {
-            "window_start": 1000.0,
-            "window_end": 2000.0,
-            "sessions": [
-                {
-                    "working_s": 120.0,
-                    "conversation_metrics": {
-                        "available": True,
-                        "window": {
-                            "requests": 3,
-                            "request_tokens": 42,
-                            "generated_tokens": 80,
-                            "token_usage_available": True,
+    def test_activity_timeline_preserves_daily_busy_rollups(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            outputs.mkdir()
+            start = time.mktime((2026, 8, 18, 10, 0, 0, 0, 0, -1))
+            run = {
+                "alive": True,
+                "tmux_session": "orch-daily-demo",
+                "run_id": "daily-demo::task",
+                "display_name": "Daily demo",
+                "agent": "codex",
+                "background_active": True,
+                "background_active_started_ts": start - 3600,
+                "mission_control": {"state": "working", "priority": "p0"},
+            }
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [run], now=start, force=True,
+            )
+            dashboard._record_activity_timeline_snapshot(
+                outputs, [], now=start + 60, force=True,
+            )
+
+            with dashboard._ACTIVITY_TIMELINE_LOCK:
+                data = dashboard._load_activity_timeline_unlocked(outputs)
+                entry = data["sessions"]["orch-daily-demo"]
+                daily = dict(entry["daily_busy"])
+            self.assertAlmostEqual(daily["2026-08-18"], 3600.0, delta=1.0)
+
+    def test_mission_analytics_aggregates_range_and_dedupes_transcripts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            outputs.mkdir()
+            (outputs / ".activity_timeline.json").write_text(json.dumps({
+                "version": 2,
+                "updated_at": 0,
+                "sessions": {
+                    "orch-one": {
+                        "run_id": "run-one", "tmux_session": "orch-one",
+                        "agent": "codex", "alive": True,
+                        "daily_busy": {
+                            "2026-08-18": 3600, "2026-08-19": 7200,
                         },
+                        "segments": [],
+                    },
+                    "orch-two": {
+                        "run_id": "run-two", "tmux_session": "orch-two",
+                        "agent": "codex", "alive": True,
+                        "daily_busy": {"2026-08-19": 1800},
+                        "segments": [],
                     },
                 },
-                {
-                    "working_s": 90.0,
-                    "conversation_metrics": {
+            }))
+
+            def attach(_outputs, payload):
+                for row in payload["sessions"]:
+                    row["conversation_metrics"] = {
                         "available": True,
-                        "window": {
-                            "requests": 2,
-                            "request_tokens": 17,
-                            "generated_tokens": 0,
-                            "token_usage_available": False,
-                        },
-                    },
-                },
-                {
-                    "working_s": 30.0,
-                    "conversation_metrics": {"loading": True},
-                },
-            ],
-        }
+                        "source_id": "shared-transcript",
+                        "window": {"daily": [
+                            {
+                                "date": "2026-08-18", "requests": 2,
+                                "request_tokens": 11, "generated_tokens": 7,
+                                "token_usage_available": True,
+                            },
+                            {
+                                "date": "2026-08-19", "requests": 1,
+                                "request_tokens": 5, "generated_tokens": 3,
+                                "token_usage_available": True,
+                            },
+                        ]},
+                    }
+                return payload
 
-        summary = dashboard._mission_daily_summary(
-            payload, date="2026-08-18"
-        )
+            with patch.object(dashboard, "_attach_conversation_metrics", attach):
+                result = dashboard._mission_analytics_payload(
+                    outputs,
+                    start_day="2026-08-18",
+                    end_day="2026-08-19",
+                    run_ids={"run-one", "run-two"},
+                    now=time.mktime((2026, 8, 19, 12, 0, 0, 0, 0, -1)),
+                )
 
-        self.assertEqual(summary["busy_s"], 240.0)
-        self.assertEqual(summary["requests"], 5)
-        self.assertEqual(summary["request_tokens"], 59)
-        self.assertTrue(summary["request_tokens_estimated"])
-        self.assertEqual(summary["generated_tokens"], 80)
-        self.assertEqual(summary["metrics_available_sessions"], 2)
-        self.assertEqual(summary["metrics_loading_sessions"], 1)
-        self.assertTrue(summary["partial"])
+            self.assertEqual(result["session_count"], 2)
+            self.assertEqual(result["source_count"], 1)
+            self.assertEqual(result["totals"]["busy_s"], 12600.0)
+            self.assertEqual(result["totals"]["requests"], 3)
+            self.assertEqual(result["totals"]["request_tokens"], 16)
+            self.assertEqual(result["totals"]["generated_tokens"], 10)
 
     def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:

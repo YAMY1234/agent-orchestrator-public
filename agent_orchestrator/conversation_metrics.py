@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -146,6 +149,8 @@ class _TranscriptState:
     seen_usage_ids: set[str] = field(default_factory=set)
     codex_total_usage: dict[str, int] = field(default_factory=dict)
     initialized: bool = False
+    persisted_offset: int = 0
+    last_persist_at: float = 0.0
 
     def reset(self) -> None:
         self.offset = 0
@@ -155,19 +160,133 @@ class _TranscriptState:
         self.seen_usage_ids.clear()
         self.codex_total_usage.clear()
         self.initialized = False
+        self.persisted_offset = 0
+        self.last_persist_at = 0.0
 
 
 class TranscriptMetricsCache:
-    """Parse only newly appended JSONL records and retain numeric events."""
+    """Parse only newly appended JSONL records and retain numeric events.
 
-    def __init__(self) -> None:
+    When ``cache_dir`` is configured, the content-free event index is also
+    persisted. Dashboard restarts can then resume from the last byte offset
+    instead of reparsing multi-gigabyte native transcripts.
+    """
+
+    def __init__(self, cache_dir: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._states: dict[tuple[str, str], _TranscriptState] = {}
+        self._cache_dir = Path(cache_dir).expanduser() if cache_dir else None
+
+    def _cache_path(self, path: Path, agent: str) -> Path | None:
+        if self._cache_dir is None:
+            return None
+        key = hashlib.sha256(
+            f"{path}\0{(agent or '').lower()}".encode("utf-8")
+        ).hexdigest()
+        return self._cache_dir / f"{key}.json"
+
+    def _restore(self, path: Path, agent: str, state: _TranscriptState) -> None:
+        cache_path = self._cache_path(path, agent)
+        if cache_path is None:
+            return
+        try:
+            data = json.loads(cache_path.read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            version = int(data.get("version") or 0)
+        except (TypeError, ValueError):
+            return
+        if version != 1:
+            return
+        if data.get("source") != str(path) or data.get("agent") != agent:
+            return
+        try:
+            state.device = int(data.get("device") or 0)
+            state.inode = int(data.get("inode") or 0)
+            state.offset = max(0, int(data.get("offset") or 0))
+        except (TypeError, ValueError):
+            return
+        requests = data.get("requests")
+        token_events = data.get("token_events")
+        state.requests = (
+            [value for value in requests if isinstance(value, dict)]
+            if isinstance(requests, list) else []
+        )
+        state.token_events = (
+            [value for value in token_events if isinstance(value, dict)]
+            if isinstance(token_events, list) else []
+        )
+        request_ids = data.get("seen_request_ids")
+        usage_ids = data.get("seen_usage_ids")
+        state.seen_request_ids = {
+            str(value) for value in request_ids if value
+        } if isinstance(request_ids, list) else set()
+        state.seen_usage_ids = {
+            str(value) for value in usage_ids if value
+        } if isinstance(usage_ids, list) else set()
+        usage = data.get("codex_total_usage")
+        state.codex_total_usage = {
+            str(key): int(value)
+            for key, value in usage.items()
+            if isinstance(value, (int, float))
+        } if isinstance(usage, dict) else {}
+        state.initialized = bool(data.get("initialized"))
+        state.persisted_offset = state.offset
+        state.last_persist_at = time.monotonic()
+
+    def _persist(self, path: Path, agent: str, state: _TranscriptState) -> None:
+        cache_path = self._cache_path(path, agent)
+        if cache_path is None or not state.initialized:
+            return
+        now = time.monotonic()
+        if state.offset == state.persisted_offset:
+            return
+        # Rewriting the compact numeric index on every five-second poll would
+        # create needless I/O. A crash can at worst require reparsing the last
+        # 30 seconds of appended transcript data.
+        if state.persisted_offset and now - state.last_persist_at < 30.0:
+            return
+        data = {
+            "version": 1,
+            "source": str(path),
+            "agent": agent,
+            "device": state.device,
+            "inode": state.inode,
+            "offset": state.offset,
+            "requests": state.requests,
+            "token_events": state.token_events,
+            "seen_request_ids": sorted(state.seen_request_ids),
+            "seen_usage_ids": sorted(state.seen_usage_ids),
+            "codex_total_usage": state.codex_total_usage,
+            "initialized": True,
+        }
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = cache_path.with_name(
+                f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            temp_path.write_text(json.dumps(data, separators=(",", ":")))
+            os.chmod(temp_path, 0o600)
+            os.replace(temp_path, cache_path)
+        except OSError:
+            return
+        state.persisted_offset = state.offset
+        state.last_persist_at = now
 
     def _state(self, path: Path, agent: str) -> _TranscriptState:
-        key = (str(path), (agent or "").lower())
+        path = Path(path)
+        agent = (agent or "").lower()
+        key = (str(path), agent)
         with self._lock:
-            return self._states.setdefault(key, _TranscriptState())
+            state = self._states.get(key)
+            if state is None:
+                state = _TranscriptState()
+                self._restore(path, agent, state)
+                self._states[key] = state
+            return state
 
     def _consume(self, state: _TranscriptState, agent: str, obj: dict[str, Any]) -> None:
         text = _user_text(agent, obj)
@@ -255,8 +374,15 @@ class TranscriptMetricsCache:
 
     def is_ready(self, path: Path, agent: str) -> bool:
         state = self._state(Path(path), agent)
-        with state.lock:
+        # A background worker can hold this lock for minutes while it indexes
+        # a very large transcript. Mission Control must return its activity
+        # timeline immediately instead of waiting behind that cold parse.
+        if not state.lock.acquire(blocking=False):
+            return False
+        try:
             return state.initialized
+        finally:
+            state.lock.release()
 
     @staticmethod
     def _sum_tokens(events: list[dict[str, Any]]) -> dict[str, int]:
@@ -276,6 +402,7 @@ class TranscriptMetricsCache:
                 self._update(path, agent, state)
             except OSError:
                 return {"available": False}
+            self._persist(path, (agent or "").lower(), state)
             requests = [
                 event for event in state.requests
                 if window_start <= float(event.get("timestamp") or 0.0) <= window_end
@@ -286,6 +413,35 @@ class TranscriptMetricsCache:
             ]
             window_tokens = self._sum_tokens(token_events)
             conversation_tokens = self._sum_tokens(state.token_events)
+            daily: dict[str, dict[str, Any]] = {}
+            for event in requests:
+                timestamp = float(event.get("timestamp") or 0.0)
+                if not timestamp:
+                    continue
+                day = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+                bucket = daily.setdefault(day, {
+                    "date": day,
+                    "requests": 0,
+                    "request_tokens": 0,
+                    "generated_tokens": 0,
+                    "token_usage_available": False,
+                })
+                bucket["requests"] += 1
+                bucket["request_tokens"] += int(event.get("tokens") or 0)
+            for event in token_events:
+                timestamp = float(event.get("timestamp") or 0.0)
+                if not timestamp:
+                    continue
+                day = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+                bucket = daily.setdefault(day, {
+                    "date": day,
+                    "requests": 0,
+                    "request_tokens": 0,
+                    "generated_tokens": 0,
+                    "token_usage_available": False,
+                })
+                bucket["generated_tokens"] += int(event.get("output_tokens") or 0)
+                bucket["token_usage_available"] = True
             return {
                 "available": True,
                 "window": {
@@ -307,6 +463,7 @@ class TranscriptMetricsCache:
                         }
                         for event in requests
                     ],
+                    "daily": [daily[day] for day in sorted(daily)],
                 },
                 "conversation": {
                     "requests": len(state.requests),
