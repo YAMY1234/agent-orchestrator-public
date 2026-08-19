@@ -1083,6 +1083,22 @@
   .mission-overview strong { color: var(--text); font-size: 15px; font-weight: 650; }
   .mission-overview .working { color: var(--ok); }
   .mission-overview .attention { color: var(--warn); }
+  .mission-daily-stats {
+    display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 8px;
+  }
+  .mission-daily-stat {
+    min-width: 0; padding: 9px 12px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg);
+  }
+  .mission-daily-stat strong {
+    display: block; color: var(--text); font-size: 19px; line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+  }
+  .mission-daily-stat span { color: var(--text-dim); font-size: 11px; }
+  .mission-daily-stat small {
+    display: block; margin-top: 3px; color: var(--text-dim); font-size: 9px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .mission-timeline-toolbar {
     display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 13px;
   }
@@ -1263,6 +1279,7 @@
   @media (max-width: 640px) {
     .sync-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mission-daily-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-grid { grid-template-columns: 1fr; }
     .mission-gantt-row { grid-template-columns: 180px minmax(520px, 1fr) 220px; }
   }
@@ -2572,6 +2589,12 @@
           <div class="mission-overview" id="mission-timeline-summary" aria-live="polite">
             <strong>Collecting mission summary…</strong>
           </div>
+          <div class="mission-daily-stats" id="mission-daily-stats" aria-label="Today's mission statistics">
+            <div class="mission-daily-stat"><strong>—</strong><span>Generated tokens today</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Busy agent-time today</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Requests sent today</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Request tokens today</span></div>
+          </div>
           <div class="mission-timeline-toolbar">
             <strong>Session activity</strong>
             <select id="mission-timeline-hours" title="Timeline observation window">
@@ -3503,9 +3526,46 @@
     }
   }
 
+  function renderMissionDailyStats(data) {
+    const root = $("mission-daily-stats");
+    if (!root) return;
+    const daily = data && data.daily;
+    if (!daily) {
+      root.innerHTML = [
+        "Generated tokens today", "Busy agent-time today",
+        "Requests sent today", "Request tokens today",
+      ].map(label => `<div class="mission-daily-stat"><strong>—</strong><span>${label}</span></div>`).join("");
+      return;
+    }
+    const generated = daily.generated_tokens === null
+      || daily.generated_tokens === undefined
+      ? "—"
+      : formatMissionCount(daily.generated_tokens);
+    const busy = formatMissionDuration(daily.busy_s || 0);
+    const requests = formatMissionCount(daily.requests || 0);
+    const requestTokens = "≈" + formatMissionCount(daily.request_tokens || 0);
+    const coverage = `${Number(daily.metrics_available_sessions || 0)}/${Number(daily.sessions || 0)} transcripts`;
+    const loading = Number(daily.metrics_loading_sessions || 0);
+    const note = loading ? `${coverage} · ${loading} updating` : coverage;
+    root.innerHTML = `
+      <div class="mission-daily-stat" title="Exact assistant output tokens where native usage is available">
+        <strong>${escapeHtml(generated)}</strong><span>Generated tokens today</span><small>${escapeHtml(note)}</small>
+      </div>
+      <div class="mission-daily-stat" title="Working time summed across sessions; concurrent agents each contribute time">
+        <strong>${escapeHtml(busy)}</strong><span>Busy agent-time today</span><small>${escapeHtml(daily.date || "Local day")}</small>
+      </div>
+      <div class="mission-daily-stat" title="User messages found in native Codex and Claude transcripts">
+        <strong>${escapeHtml(requests)}</strong><span>Requests sent today</span><small>${escapeHtml(note)}</small>
+      </div>
+      <div class="mission-daily-stat" title="Estimated from user-message UTF-8 size; native transcripts do not provide per-message token counts">
+        <strong>${escapeHtml(requestTokens)}</strong><span>Request tokens today</span><small>estimated · ${escapeHtml(note)}</small>
+      </div>`;
+  }
+
   function renderMissionTimelineSummary(data, rows) {
     const root = $("mission-timeline-summary");
     if (!root) return;
+    renderMissionDailyStats(data);
     if (!data || !Array.isArray(rows)) {
       root.innerHTML = "<strong>Collecting mission summary…</strong>";
       return;
@@ -3644,18 +3704,18 @@
         const timestamp = Number(event.timestamp || 0);
         if (!timestamp || timestamp < start || timestamp > end) return "";
         const left = Math.max(0, Math.min(100, (timestamp - start) * 100 / span));
-        const title = `User request · ${new Date(timestamp * 1000).toLocaleString()} · ${formatMissionCount(event.characters)} characters`;
+        const title = `User request · ${new Date(timestamp * 1000).toLocaleString()} · ${formatMissionCount(event.characters)} characters · ≈${formatMissionCount(event.tokens || 0)} tokens`;
         return `<span class="mission-request-marker" style="left:${left}%" title="${escapeHtml(title)}"></span>`;
       }).join("");
       const windowSummary = conversation.loading
         ? "Loading conversation metrics…"
         : conversation.available
-        ? `${formatMissionCount(windowMetrics.requests)} requests · ${formatMissionCount(windowMetrics.characters)} chars · ${formatMissionCount(windowMetrics.tokens)} tokens`
+        ? `${formatMissionCount(windowMetrics.requests)} requests · ≈${formatMissionCount(windowMetrics.request_tokens || 0)} request tokens · ${formatMissionCount(windowMetrics.generated_tokens || 0)} generated`
         : "Conversation metrics unavailable";
       const totalSummary = conversation.loading
         ? "Parsing native transcript incrementally"
         : conversation.available
-        ? `${formatMissionCount(totalMetrics.requests)} requests · ${formatMissionCount(totalMetrics.characters)} chars · ${formatMissionCount(totalMetrics.tokens)} tokens`
+        ? `${formatMissionCount(totalMetrics.requests)} requests · ≈${formatMissionCount(totalMetrics.request_tokens || 0)} request tokens · ${formatMissionCount(totalMetrics.generated_tokens || 0)} generated`
         : "No native transcript matched";
       return `<div class="mission-gantt-row" data-run-id="${escapeHtml(row.run_id)}" title="Selected window: ${escapeHtml(windowSummary)}&#10;Conversation total: ${escapeHtml(totalSummary)}">
         <div class="mission-gantt-label mission-timeline-open" data-run-id="${escapeHtml(row.run_id)}" title="Open ${escapeHtml(display)}">

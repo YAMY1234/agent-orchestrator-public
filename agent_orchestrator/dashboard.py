@@ -3971,10 +3971,18 @@ def _flush_activity_timeline(outputs_dir: Path) -> None:
 def _activity_timeline_payload(
     outputs_dir: Path, *, hours: float = 6.0, now: float | None = None,
     include_ended: bool = False,
+    window_start: float | None = None,
 ) -> dict[str, Any]:
     end_ts = float(now if now is not None else time.time())
-    clamped_hours = min(168.0, max(0.25, float(hours)))
-    start_ts = end_ts - clamped_hours * 3600.0
+    if window_start is None:
+        clamped_hours = min(168.0, max(0.25, float(hours)))
+        start_ts = end_ts - clamped_hours * 3600.0
+    else:
+        start_ts = max(
+            end_ts - _ACTIVITY_TIMELINE_RETENTION_SECONDS,
+            min(float(window_start), end_ts),
+        )
+        clamped_hours = max(0.0, (end_ts - start_ts) / 3600.0)
     rows: list[dict[str, Any]] = []
     with _ACTIVITY_TIMELINE_LOCK:
         data = _load_activity_timeline_unlocked(outputs_dir)
@@ -4139,6 +4147,61 @@ def _attach_conversation_metrics(
     for row, stats in zip(rows, metrics):
         row["conversation_metrics"] = stats
     return payload
+
+
+def _local_today_start(now: float | None = None) -> tuple[float, str]:
+    current = datetime.fromtimestamp(float(now if now is not None else time.time()))
+    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    # mktime applies the machine's local timezone and DST rules, matching the
+    # timestamps shown elsewhere in Mission Control.
+    return time.mktime(start.timetuple()), start.strftime("%Y-%m-%d")
+
+
+def _mission_daily_summary(payload: dict[str, Any], *, date: str) -> dict[str, Any]:
+    rows = payload.get("sessions")
+    rows = rows if isinstance(rows, list) else []
+    busy_s = sum(float(row.get("working_s") or 0.0) for row in rows)
+    requests = 0
+    request_tokens = 0
+    generated_tokens = 0
+    available = 0
+    token_usage_available = 0
+    loading = 0
+    for row in rows:
+        metrics = row.get("conversation_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        if metrics.get("loading"):
+            loading += 1
+        if not metrics.get("available"):
+            continue
+        available += 1
+        window = metrics.get("window")
+        window = window if isinstance(window, dict) else {}
+        requests += int(window.get("requests") or 0)
+        request_tokens += int(window.get("request_tokens") or 0)
+        if window.get("token_usage_available"):
+            token_usage_available += 1
+            generated_tokens += int(window.get("generated_tokens") or 0)
+    return {
+        "date": date,
+        "window_start": payload.get("window_start"),
+        "window_end": payload.get("window_end"),
+        # Busy time is summed across sessions (agent-time), so two agents
+        # working for one hour contribute two busy hours.
+        "busy_s": round(busy_s, 1),
+        "busy_time_mode": "sum_across_sessions",
+        "requests": requests,
+        "request_tokens": request_tokens,
+        "request_tokens_estimated": True,
+        "generated_tokens": (
+            generated_tokens if token_usage_available else None
+        ),
+        "sessions": len(rows),
+        "metrics_available_sessions": available,
+        "token_usage_available_sessions": token_usage_available,
+        "metrics_loading_sessions": loading,
+        "partial": available < len(rows),
+    }
 
 
 def _probe_session_activity(session: str) -> dict[str, Any]:
@@ -7128,12 +7191,26 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         hours: float = Query(0.25, ge=0.25, le=168.0),
         include_ended: bool = Query(False),
     ):
-        return _attach_conversation_metrics(
+        now = time.time()
+        payload = _attach_conversation_metrics(
             outputs_dir,
             _activity_timeline_payload(
-                outputs_dir, hours=hours, include_ended=include_ended,
+                outputs_dir, hours=hours, now=now,
+                include_ended=include_ended,
             ),
         )
+        day_start, day = _local_today_start(now)
+        daily_payload = _attach_conversation_metrics(
+            outputs_dir,
+            _activity_timeline_payload(
+                outputs_dir,
+                now=now,
+                include_ended=True,
+                window_start=day_start,
+            ),
+        )
+        payload["daily"] = _mission_daily_summary(daily_payload, date=day)
+        return payload
 
     @app.get("/api/sessions")
     def list_sessions():

@@ -34,6 +34,19 @@ _TOKEN_FIELDS = (
 )
 
 
+def _estimated_request_tokens(text: str) -> int:
+    """Return a cheap, model-neutral estimate without retaining content.
+
+    Native Codex/Claude transcripts do not attach token counts to individual
+    user messages. UTF-8 bytes / 4 is a useful cross-language approximation:
+    about four ASCII characters per token while CJK characters naturally
+    contribute more bytes. The Dashboard labels this value as estimated.
+    """
+    if not text:
+        return 0
+    return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+
 def _timestamp(value: Any) -> float:
     if isinstance(value, (int, float)):
         return float(value)
@@ -164,6 +177,7 @@ class TranscriptMetricsCache:
                 state.requests.append({
                     "timestamp": _event_timestamp(obj),
                     "characters": len(text),
+                    "tokens": _estimated_request_tokens(text),
                 })
                 if request_id:
                     state.seen_request_ids.add(request_id)
@@ -277,12 +291,19 @@ class TranscriptMetricsCache:
                 "window": {
                     "requests": len(requests),
                     "characters": sum(int(event.get("characters") or 0) for event in requests),
+                    "request_tokens": sum(
+                        int(event.get("tokens") or 0) for event in requests
+                    ),
+                    "request_tokens_estimated": True,
                     "tokens": window_tokens.get("total_tokens", 0),
+                    "generated_tokens": window_tokens.get("output_tokens", 0),
+                    "token_usage_available": bool(state.token_events),
                     "token_usage": window_tokens,
                     "request_events": [
                         {
                             "timestamp": event.get("timestamp", 0.0),
                             "characters": event.get("characters", 0),
+                            "tokens": event.get("tokens", 0),
                         }
                         for event in requests
                     ],
@@ -292,7 +313,13 @@ class TranscriptMetricsCache:
                     "characters": sum(
                         int(event.get("characters") or 0) for event in state.requests
                     ),
+                    "request_tokens": sum(
+                        int(event.get("tokens") or 0) for event in state.requests
+                    ),
+                    "request_tokens_estimated": True,
                     "tokens": conversation_tokens.get("total_tokens", 0),
+                    "generated_tokens": conversation_tokens.get("output_tokens", 0),
+                    "token_usage_available": bool(state.token_events),
                     "token_usage": conversation_tokens,
                 },
             }

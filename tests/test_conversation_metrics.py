@@ -39,7 +39,10 @@ class ConversationMetricsTests(unittest.TestCase):
                     "type": "event_msg",
                     "payload": {
                         "type": "token_count",
-                        "info": {"total_token_usage": {"total_tokens": 10}},
+                        "info": {"total_token_usage": {
+                            "input_tokens": 6, "output_tokens": 4,
+                            "total_tokens": 10,
+                        }},
                     },
                 },
                 {
@@ -47,7 +50,10 @@ class ConversationMetricsTests(unittest.TestCase):
                     "type": "event_msg",
                     "payload": {
                         "type": "token_count",
-                        "info": {"total_token_usage": {"total_tokens": 10}},
+                        "info": {"total_token_usage": {
+                            "input_tokens": 6, "output_tokens": 4,
+                            "total_tokens": 10,
+                        }},
                     },
                 },
                 {
@@ -55,7 +61,10 @@ class ConversationMetricsTests(unittest.TestCase):
                     "type": "event_msg",
                     "payload": {
                         "type": "token_count",
-                        "info": {"total_token_usage": {"total_tokens": 25}},
+                        "info": {"total_token_usage": {
+                            "input_tokens": 15, "output_tokens": 10,
+                            "total_tokens": 25,
+                        }},
                     },
                 },
             )
@@ -65,7 +74,9 @@ class ConversationMetricsTests(unittest.TestCase):
             )
             self.assertEqual(stats["window"]["requests"], 1)
             self.assertEqual(stats["window"]["characters"], 5)
+            self.assertEqual(stats["window"]["request_tokens"], 2)
             self.assertEqual(stats["window"]["tokens"], 25)
+            self.assertEqual(stats["window"]["generated_tokens"], 10)
 
             _append(path, {
                 "timestamp": "2026-08-09T10:02:00Z",
@@ -80,6 +91,7 @@ class ConversationMetricsTests(unittest.TestCase):
             )
             self.assertEqual(stats["conversation"]["requests"], 2)
             self.assertEqual(stats["conversation"]["characters"], 11)
+            self.assertEqual(stats["conversation"]["request_tokens"], 4)
 
     def test_claude_excludes_tool_and_notification_records_and_dedupes_usage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,7 +138,9 @@ class ConversationMetricsTests(unittest.TestCase):
             )
             self.assertEqual(stats["window"]["requests"], 1)
             self.assertEqual(stats["window"]["characters"], 5)
+            self.assertEqual(stats["window"]["request_tokens"], 2)
             self.assertEqual(stats["window"]["tokens"], 26)
+            self.assertEqual(stats["window"]["generated_tokens"], 11)
             self.assertEqual(stats["window"]["token_usage"]["output_tokens"], 11)
 
 

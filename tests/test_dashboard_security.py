@@ -998,6 +998,55 @@ Please approve the remote login
             persisted = (outputs / ".activity_timeline.json").read_text()
             self.assertNotIn("terminal", persisted.lower())
 
+    def test_mission_daily_summary_aggregates_agent_time_and_conversation(self):
+        payload = {
+            "window_start": 1000.0,
+            "window_end": 2000.0,
+            "sessions": [
+                {
+                    "working_s": 120.0,
+                    "conversation_metrics": {
+                        "available": True,
+                        "window": {
+                            "requests": 3,
+                            "request_tokens": 42,
+                            "generated_tokens": 80,
+                            "token_usage_available": True,
+                        },
+                    },
+                },
+                {
+                    "working_s": 90.0,
+                    "conversation_metrics": {
+                        "available": True,
+                        "window": {
+                            "requests": 2,
+                            "request_tokens": 17,
+                            "generated_tokens": 0,
+                            "token_usage_available": False,
+                        },
+                    },
+                },
+                {
+                    "working_s": 30.0,
+                    "conversation_metrics": {"loading": True},
+                },
+            ],
+        }
+
+        summary = dashboard._mission_daily_summary(
+            payload, date="2026-08-18"
+        )
+
+        self.assertEqual(summary["busy_s"], 240.0)
+        self.assertEqual(summary["requests"], 5)
+        self.assertEqual(summary["request_tokens"], 59)
+        self.assertTrue(summary["request_tokens_estimated"])
+        self.assertEqual(summary["generated_tokens"], 80)
+        self.assertEqual(summary["metrics_available_sessions"], 2)
+        self.assertEqual(summary["metrics_loading_sessions"], 1)
+        self.assertTrue(summary["partial"])
+
     def test_scoped_sync_ignores_unrelated_workspace_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
