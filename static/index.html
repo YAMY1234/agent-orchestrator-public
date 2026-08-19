@@ -3154,6 +3154,7 @@
   // ---------- Global state ----------
   let sessions = [];
   let dashboardInstanceId = "";
+  let sessionSnapshotReady = false;
   // Ordered slots: slots[i] = run_id or null. Length fixed by layout.
   let slots = JSON.parse(localStorage.getItem("orch_slots") || "[]");
   let layout = localStorage.getItem("orch_layout") || "1";
@@ -3178,13 +3179,20 @@
   const PANE_CACHE_MAX = 15;
   const PANE_CACHE_TTL_MS = 30 * 60 * 1000;
   const PANE_CACHE_SIZE_TOLERANCE_PX = 32;
-  const TTY_ATTACH_CONCURRENCY = 4;
+  // Rebuilding every pane after a browser/dashboard restart used to create a
+  // thundering herd of ttyd HTTP + WebSocket connections. Two staged attaches
+  // keep the UI responsive while still restoring a 4x4 layout quickly.
+  const TTY_ATTACH_CONCURRENCY = 2;
+  const TTY_ATTACH_SETTLE_MS = 90;
   const ttyAttachQueue = [];
   let ttyAttachActive = 0;
+  let dashboardRestartReloading = false;
 
-  function scheduleTtyAttach(task) {
+  function scheduleTtyAttach(task, { priority = false } = {}) {
     return new Promise((resolve, reject) => {
-      ttyAttachQueue.push({ task, resolve, reject });
+      const item = { task, resolve, reject };
+      if (priority) ttyAttachQueue.unshift(item);
+      else ttyAttachQueue.push(item);
       pumpTtyAttachQueue();
     });
   }
@@ -3198,7 +3206,7 @@
         .then(item.resolve, item.reject)
         .finally(() => {
           ttyAttachActive = Math.max(0, ttyAttachActive - 1);
-          pumpTtyAttachQueue();
+          setTimeout(pumpTtyAttachQueue, TTY_ATTACH_SETTLE_MS);
         });
     }
   }
@@ -3669,7 +3677,7 @@
     $("mission-updated").textContent = `Activity window ${data.hours}h · sampled about every ${Number(data.sample_interval_s || 10)}s · updated ${new Date().toLocaleTimeString()}`;
   }
 
-  async function refreshMissionTimeline() {
+  async function refreshMissionTimelineOnce() {
     const request = ++missionTimelineRequest;
     const hours = Number($("mission-timeline-hours").value || 0.25);
     const includeEnded = !missionLifecycles.size || missionLifecycles.has("ended");
@@ -3683,6 +3691,23 @@
       $("mission-timeline-summary").innerHTML = "<strong>Mission summary unavailable.</strong>";
       $("mission-gantt").innerHTML = `<div class="mission-timeline-empty">Timeline unavailable: ${escapeHtml(error.message)}</div>`;
     }
+  }
+
+  let missionTimelineInFlight = null;
+  let missionTimelineRefreshPending = false;
+  function refreshMissionTimeline() {
+    if (missionTimelineInFlight) {
+      missionTimelineRefreshPending = true;
+      return missionTimelineInFlight;
+    }
+    missionTimelineInFlight = refreshMissionTimelineOnce().finally(() => {
+      missionTimelineInFlight = null;
+      if (missionTimelineRefreshPending) {
+        missionTimelineRefreshPending = false;
+        refreshMissionTimeline();
+      }
+    });
+    return missionTimelineInFlight;
   }
 
   function missionRows({ includeEnded = false } = {}) {
@@ -4348,7 +4373,7 @@
   })();
 
   // ---------- Session list ----------
-  async function refreshList() {
+  async function refreshListOnce() {
     // Hard-refresh (Cmd+Shift+R) fires many concurrent requests (HTML,
     // static assets, /api/health, /api/sessions, /api/host, plus all ttyd
     // iframe loads). uvicorn's single-threaded loop plus ~0.6s `tmux
@@ -4364,10 +4389,32 @@
         const nextInstanceId = String(data.instance_id || "");
         if (dashboardInstanceId && nextInstanceId
             && dashboardInstanceId !== nextInstanceId) {
-          location.reload();
+          if (!dashboardRestartReloading) {
+            dashboardRestartReloading = true;
+            // Stop old ttyd iframes before reloading. Otherwise their bundled
+            // reconnect loop races the new page and doubles the restart load.
+            for (const ctrl of paneCtrls.values()) {
+              ctrl.attachToken = (ctrl.attachToken || 0) + 1;
+              try { detachPaneSources(ctrl); } catch {}
+              if (ctrl.paneEl) {
+                ctrl.paneEl.replaceChildren();
+                ctrl.paneEl.textContent = "(dashboard restarted — reconnecting…)";
+              }
+            }
+            setTimeout(() => location.reload(), 80);
+          }
           return;
         }
         if (nextInstanceId) dashboardInstanceId = nextInstanceId;
+        const snapshot = data.snapshot || {};
+        if (snapshot.ready === false) {
+          $("conn-status").textContent = snapshot.scanning
+            ? "warming session snapshot…"
+            : "waiting for session snapshot…";
+          return;
+        }
+        const firstSnapshot = !sessionSnapshotReady;
+        sessionSnapshotReady = true;
         sessions = data.sessions || [];
         updateMissionControlButton();
         if (!$("mission-modal").hidden) {
@@ -4406,6 +4453,7 @@
           if (slots[i] && !alive.has(slots[i])) { slots[i] = null; changed = true; }
         }
         if (changed) { saveSlots(); renderGrid(); }
+        else if (firstSnapshot) renderGrid();
         return;  // success
       } catch (e) {
         lastErr = e;
@@ -4416,6 +4464,15 @@
       }
     }
     $("conn-status").textContent = "⚠ " + (lastErr ? lastErr.message : "refresh failed");
+  }
+
+  let refreshListInFlight = null;
+  function refreshList() {
+    if (refreshListInFlight) return refreshListInFlight;
+    refreshListInFlight = refreshListOnce().finally(() => {
+      refreshListInFlight = null;
+    });
+    return refreshListInFlight;
   }
 
   function dotClass(s) {
@@ -5600,7 +5657,7 @@
       const prev = btnReload.textContent;
       btnReload.textContent = "…";
       try {
-        await attachPaneView(ctrl);
+        await attachPaneView(ctrl, { priority: true });
       } finally {
         btnReload.disabled = false;
         btnReload.textContent = prev;
@@ -5924,7 +5981,7 @@
     ctrl.usingTty = false;
   }
 
-  async function attachPaneView(ctrl) {
+  async function attachPaneView(ctrl, { priority = false } = {}) {
     const { runId, paneEl } = ctrl;
     const s = currentSessionForPane(ctrl);
     ctrl.session = Object.assign({}, ctrl.session || {}, s);
@@ -5942,8 +5999,9 @@
     // --no-ttyd (or ttyd isn't on PATH) and the iframe path isn't available.
     if (ttyMode && health.ttyd && s.alive) {
       try {
-        const resp = await scheduleTtyAttach(() =>
-          api(`/api/sessions/${encodeURIComponent(runId)}/tty`)
+        const resp = await scheduleTtyAttach(
+          () => api(`/api/sessions/${encodeURIComponent(runId)}/tty`),
+          { priority },
         );
         if (paneCtrls.get(runId) !== ctrl || ctrl.attachToken !== attachToken) return;
         if (resp && resp.ok && resp.url) {
@@ -6165,7 +6223,7 @@
       if (ctrl) {
         ctrl.session = Object.assign({}, ctrl.session || {}, { terminal_theme: value });
         applyPaneTerminalTheme(ctrl, ctrl.session);
-        await attachPaneView(ctrl);
+        await attachPaneView(ctrl, { priority: true });
       }
     } catch (e) {
       if (selectEl) {
@@ -9821,7 +9879,16 @@
     // can find pinned run_ids in `sessions`. If we call setLayout before
     // refreshList, `sessions=[]` means pinned run_ids temporarily render as
     // empty slots and boot leaves the panes blank until the next refresh.
-    await refreshList();
+    // The server now warms the expensive all-session snapshot in one
+    // background worker. Wait for its first complete result without creating
+    // overlapping scans; otherwise boot would render saved slots as empty.
+    const snapshotDeadline = Date.now() + 30000;
+    while (!sessionSnapshotReady && Date.now() < snapshotDeadline) {
+      await refreshList();
+      if (!sessionSnapshotReady) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
     setLayout(layout);
     // Auto-place first session if all slots empty
     if (sessions.length && slots.every(x => !x)) {

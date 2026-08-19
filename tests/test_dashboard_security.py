@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -272,6 +273,70 @@ class TtydRecoveryTests(unittest.TestCase):
 
         self.assertFalse(killed)
         run.assert_not_called()
+
+    def test_reap_dead_uses_one_tmux_inventory_for_all_panes(self):
+        manager = dashboard.TtydManager(enabled=False)
+        first = Mock()
+        first.poll.return_value = None
+        second = Mock()
+        second.poll.return_value = None
+        manager._procs = {
+            "orch-one": (first, 7800, ""),
+            "orch-two": (second, 7801, ""),
+        }
+
+        with patch.object(
+            dashboard,
+            "tmux_list_sessions",
+            return_value=["orch-one", "orch-one-web"],
+        ) as inventory, patch.object(
+            dashboard, "tmux_alive", side_effect=AssertionError(
+                "reap_dead must not probe every session separately"
+            )
+        ), patch.object(
+            dashboard, "kill_shadow_session"
+        ) as kill_shadow:
+            reaped = manager.reap_dead(min_interval_s=0)
+
+        self.assertEqual(reaped, 1)
+        inventory.assert_called_once_with()
+        first.terminate.assert_not_called()
+        second.terminate.assert_called_once_with()
+        kill_shadow.assert_called_once_with("orch-two", owner=manager._owner)
+
+
+class SessionSnapshotTests(unittest.TestCase):
+    def test_slow_scan_does_not_block_snapshot_readers_or_queue_refreshes(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def scan():
+            calls.append(time.time())
+            entered.set()
+            release.wait(2)
+            return [{"run_id": "demo::task"}]
+
+        service = dashboard.SessionSnapshotService(scan, interval_s=60)
+        service.start()
+        self.assertTrue(entered.wait(1))
+        started = time.monotonic()
+        snapshot = service.snapshot()
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertFalse(snapshot["ready"])
+        self.assertTrue(snapshot["scanning"])
+        self.assertFalse(service.request_refresh())
+
+        release.set()
+        deadline = time.time() + 2
+        while not service.snapshot()["ready"] and time.time() < deadline:
+            time.sleep(0.01)
+        ready = service.snapshot()
+        service.stop()
+
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["sessions"], [{"run_id": "demo::task"}])
+        self.assertEqual(len(calls), 1)
 
 
 class DashboardAuthenticationTests(unittest.TestCase):

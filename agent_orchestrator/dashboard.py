@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from .conversation_metrics import TranscriptMetricsCache
@@ -6233,6 +6233,13 @@ class TtydManager:
         self._procs: dict[str, tuple[subprocess.Popen, int, str]] = {}
         self._next_port = base_port
         self._owner = f"{os.getpid()}-{uuid.uuid4().hex}"
+        # FastAPI runs sync endpoints in a thread pool, so two iframe loads
+        # for the same session can call ensure() concurrently.  Without a
+        # lock both callers can spawn a ttyd and the last dict assignment
+        # loses track of the first process.  Besides leaking a process, that
+        # double-attaches tmux and makes later browser reconnects much noisier.
+        self._lock = threading.RLock()
+        self._last_reap_at = 0.0
         # Sweep orphan ttyd processes left behind by a previous dashboard
         # that crashed / was SIGKILLed before it could call stop_all. Without
         # this, the new dashboard's TtydManager will try to bind ports
@@ -6336,6 +6343,10 @@ class TtydManager:
         """Start (or reuse) a ttyd attached to a *shadow* tmux client for
         `session`. See `ensure_shadow_session` for shadow semantics.
         """
+        with self._lock:
+            return self._ensure_locked(session, theme)
+
+    def _ensure_locked(self, session: str, theme: str = "") -> Optional[int]:
         if not self.enabled or not session or not tmux_alive(session):
             return None
         theme = _normalize_terminal_theme(theme)
@@ -6415,17 +6426,18 @@ class TtydManager:
         ttyd instead of calling `ensure(..., theme="")` and accidentally
         replacing a themed terminal with the default one.
         """
-        existing = self._procs.get(session)
-        if existing:
-            proc, port, theme = existing
-            if (proc.poll() is None
-                    and tmux_alive(shadow_name(session))):
-                return port
-            if proc.poll() is None:
-                self._stop_proc(proc)
-            self._procs.pop(session, None)
-            return self.ensure(session, theme=theme)
-        return self.ensure(session)
+        with self._lock:
+            existing = self._procs.get(session)
+            if existing:
+                proc, port, theme = existing
+                if (proc.poll() is None
+                        and tmux_alive(shadow_name(session))):
+                    return port
+                if proc.poll() is None:
+                    self._stop_proc(proc)
+                self._procs.pop(session, None)
+                return self.ensure(session, theme=theme)
+            return self.ensure(session)
 
     def theme_for(self, session: str) -> str:
         """Return the live ttyd theme for `session` without scanning runs.
@@ -6436,16 +6448,17 @@ class TtydManager:
         manager already knows the theme selected when `/api/.../tty` called
         `ensure()`.
         """
-        existing = self._procs.get(session)
-        if not existing:
-            return ""
-        proc, _port, theme = existing
-        if proc.poll() is not None:
-            self._procs.pop(session, None)
-            return ""
-        return _normalize_terminal_theme(theme)
+        with self._lock:
+            existing = self._procs.get(session)
+            if not existing:
+                return ""
+            proc, _port, theme = existing
+            if proc.poll() is not None:
+                self._procs.pop(session, None)
+                return ""
+            return _normalize_terminal_theme(theme)
 
-    def reap_dead(self) -> int:
+    def reap_dead(self, *, min_interval_s: float = 10.0) -> int:
         """Terminate ttyd processes whose underlying tmux session is gone.
 
         Called periodically from `_discover_runs` so a session that was
@@ -6454,28 +6467,137 @@ class TtydManager:
         reaped. Safe to call from any thread — subprocess.terminate and
         the dict ops are cheap.
         """
-        reaped = 0
-        for session, (proc, _, _) in list(self._procs.items()):
-            if (tmux_alive(session) and proc.poll() is None
-                    and tmux_alive(shadow_name(session))):
-                continue
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            kill_shadow_session(session, owner=self._owner)
-            self._procs.pop(session, None)
-            reaped += 1
-        return reaped
+        with self._lock:
+            now = time.monotonic()
+            if min_interval_s > 0 and now - self._last_reap_at < min_interval_s:
+                return 0
+            self._last_reap_at = now
+            # One tmux server query replaces two `tmux has-session` subprocess
+            # calls per pane.  A 4x4 dashboard previously launched about 32
+            # tmux commands on every five-second browser poll.
+            live_sessions = set(tmux_list_sessions())
+            reaped = 0
+            for session, (proc, _, _) in list(self._procs.items()):
+                if (session in live_sessions and proc.poll() is None
+                        and shadow_name(session) in live_sessions):
+                    continue
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                kill_shadow_session(session, owner=self._owner)
+                self._procs.pop(session, None)
+                reaped += 1
+            return reaped
 
     def stop_all(self):
-        for session, (proc, _, _) in list(self._procs.items()):
+        with self._lock:
+            for session, (proc, _, _) in list(self._procs.items()):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                kill_shadow_session(session, owner=self._owner)
+            self._procs.clear()
+
+
+class SessionSnapshotService:
+    """Keep the expensive all-session discovery off HTTP request paths.
+
+    Discovery scans historical run metadata and captures every live tmux pane.
+    It can take longer than the browser's five-second polling interval on a
+    large workspace.  This service coalesces refresh requests into one worker
+    and lets readers use the latest complete snapshot immediately.
+    """
+
+    def __init__(self, scan: Callable[[], list[dict[str, Any]]],
+                 interval_s: float = 10.0):
+        self._scan = scan
+        self._interval_s = max(1.0, float(interval_s))
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._sessions: list[dict[str, Any]] = []
+        self._ready = False
+        self._scanning = False
+        self._updated_at = 0.0
+        self._scan_duration_s = 0.0
+        self._error = ""
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._wake.set()
+            thread = threading.Thread(
+                target=self._run,
+                daemon=True,
+                name="orch-session-snapshot",
+            )
+            self._thread = thread
+            thread.start()
+
+    def stop(self, timeout: float = 3.0) -> None:
+        self._stop.set()
+        self._wake.set()
+        with self._lock:
+            thread = self._thread
+        if thread:
+            thread.join(timeout=timeout)
+        with self._lock:
+            self._thread = None
+
+    def request_refresh(self, *, min_age_s: float = 0.0) -> bool:
+        with self._lock:
+            if self._scanning:
+                return False
+            if (self._ready and min_age_s > 0
+                    and time.time() - self._updated_at < min_age_s):
+                return False
+        self._wake.set()
+        return True
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "sessions": copy.deepcopy(self._sessions),
+                "ready": self._ready,
+                "scanning": self._scanning,
+                "updated_at": self._updated_at,
+                "age_s": (
+                    round(max(0.0, time.time() - self._updated_at), 3)
+                    if self._updated_at else None
+                ),
+                "scan_duration_s": round(self._scan_duration_s, 3),
+                "error": self._error,
+            }
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(self._interval_s)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            with self._lock:
+                self._scanning = True
+            started = time.monotonic()
             try:
-                proc.terminate()
-            except Exception:
-                pass
-            kill_shadow_session(session, owner=self._owner)
-        self._procs.clear()
+                sessions = self._scan()
+                error = ""
+            except Exception as exc:
+                sessions = None
+                error = f"{type(exc).__name__}: {exc}"
+            duration = time.monotonic() - started
+            with self._lock:
+                if sessions is not None:
+                    self._sessions = sessions
+                    self._ready = True
+                    self._updated_at = time.time()
+                self._scan_duration_s = duration
+                self._error = error
+                self._scanning = False
 
 
 def create_app(outputs_dir: Path, token: Optional[str] = None,
@@ -6494,6 +6616,19 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         os.environ.get("ORCH_DASHBOARD_CONFIG", str(DEFAULT_DASHBOARD_CONFIG))
     ).expanduser()
     sync_settings = load_sync_settings(dashboard_config_path)
+    def scan_session_snapshot() -> list[dict[str, Any]]:
+        # Reaping shares the same low-frequency worker as discovery. HTTP
+        # readers must never wait for tmux housekeeping.
+        try:
+            ttyd.reap_dead(min_interval_s=0)
+        except Exception:
+            pass
+        return _discover_runs(outputs_dir)
+
+    session_snapshots = SessionSnapshotService(
+        scan_session_snapshot,
+        interval_s=10.0,
+    )
 
     def busy_sync_paths() -> list[str]:
         if not sync_settings.enabled:
@@ -6525,6 +6660,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         sync_status.start()
+        session_snapshots.start()
         if (app.state.active_snapshot_autosave_enabled
                 and app.state.active_snapshot_autosave_thread is None):
             stop_event = threading.Event()
@@ -6563,31 +6699,6 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             app.state.active_snapshot_autosave_thread = thread
             thread.start()
 
-        if app.state.activity_sampler_thread is None:
-            activity_stop = threading.Event()
-
-            def activity_sampler_loop():
-                while not activity_stop.wait(5.0):
-                    try:
-                        last_sample = _activity_timeline_last_sample(outputs_dir)
-                        if time.time() - last_sample >= 8.0:
-                            _discover_runs(outputs_dir)
-                    except Exception as exc:
-                        print(
-                            f"WARNING: activity timeline sample failed: {exc}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-
-            activity_thread = threading.Thread(
-                target=activity_sampler_loop,
-                daemon=True,
-                name="orch-activity-timeline",
-            )
-            app.state.activity_sampler_stop = activity_stop
-            app.state.activity_sampler_thread = activity_thread
-            activity_thread.start()
-
         try:
             yield
         finally:
@@ -6599,14 +6710,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 thread.join(timeout=2)
             app.state.active_snapshot_autosave_stop = None
             app.state.active_snapshot_autosave_thread = None
-            activity_stop = app.state.activity_sampler_stop
-            activity_thread = app.state.activity_sampler_thread
-            if isinstance(activity_stop, threading.Event):
-                activity_stop.set()
-            if isinstance(activity_thread, threading.Thread):
-                activity_thread.join(timeout=3)
-            app.state.activity_sampler_stop = None
-            app.state.activity_sampler_thread = None
+            session_snapshots.stop(timeout=3)
             _flush_activity_timeline(outputs_dir)
             sync_status.stop()
 
@@ -6624,8 +6728,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     app.state.active_snapshot_autosave_interval = _active_snapshot_autosave_interval()
     app.state.active_snapshot_autosave_stop = None
     app.state.active_snapshot_autosave_thread = None
-    app.state.activity_sampler_stop = None
-    app.state.activity_sampler_thread = None
+    app.state.session_snapshots = session_snapshots
     app.state.sync_status = sync_status
 
     # Optional background publisher: write current URL to iCloud Drive so a
@@ -6704,6 +6807,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @app.get("/api/health")
     def health():
+        snapshot = session_snapshots.snapshot()
         return {
             "ok": True,
             "auth": bool(token),
@@ -6720,6 +6824,13 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 "enabled": True,
                 "sample_interval_seconds": 10.0,
                 "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
+            },
+            "session_snapshot": {
+                key: snapshot[key]
+                for key in (
+                    "ready", "scanning", "updated_at", "age_s",
+                    "scan_duration_s", "error",
+                )
             },
             "sync_status": sync_status.health_status(),
         }
@@ -6912,7 +7023,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     # them as `orch-<slug>`).
 
     async def _proxy_http(session: str, subpath: str, request: Request):
-        port = ttyd.port_for(session)
+        # port_for may query tmux or launch ttyd. Keep those synchronous
+        # subprocess calls off uvicorn's event loop so existing WebSockets
+        # continue flowing while another pane reconnects.
+        port = await asyncio.to_thread(ttyd.port_for, session)
         if not port:
             raise HTTPException(502, "ttyd not available for this session")
         url = f"http://127.0.0.1:{port}/{subpath}"
@@ -6949,7 +7063,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @app.get("/tty/{session}/")
     async def tty_index(session: str, request: Request):
-        if not tmux_alive(session):
+        if not await asyncio.to_thread(tmux_alive, session):
             raise HTTPException(404, "tmux session not alive")
         return await _proxy_http(session, "", request)
 
@@ -6973,7 +7087,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             await ws.close(code=1008, reason="invalid token")
             return
         await ws.accept(subprotocol="tty")  # ttyd uses the "tty" subprotocol
-        port = ttyd.port_for(session)
+        port = await asyncio.to_thread(ttyd.port_for, session)
         if not port:
             await ws.close(code=1011, reason="ttyd not available")
             return
@@ -7023,16 +7137,21 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @app.get("/api/sessions")
     def list_sessions():
-        # Reap ttyd processes whose tmux session is gone so a killed
-        # session doesn't leave a zombie ttyd + shadow behind. Cheap
-        # (dict scan + subprocess.poll); runs on every poll tick.
-        try:
-            ttyd.reap_dead()
-        except Exception:
-            pass
+        snapshot = session_snapshots.snapshot()
+        # An open dashboard asks for a fresh observation at most every five
+        # seconds. request_refresh coalesces while a scan is already running,
+        # so slow workspaces never build an unbounded request queue.
+        session_snapshots.request_refresh(min_age_s=4.5)
         return {
-            "sessions": _discover_runs(outputs_dir),
+            "sessions": snapshot["sessions"],
             "instance_id": dashboard_instance_id,
+            "snapshot": {
+                key: snapshot[key]
+                for key in (
+                    "ready", "scanning", "updated_at", "age_s",
+                    "scan_duration_s", "error",
+                )
+            },
         }
 
     @app.get("/api/sessions/{run_id}")
