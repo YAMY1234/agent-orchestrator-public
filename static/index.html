@@ -1099,6 +1099,49 @@
     display: block; margin-top: 3px; color: var(--text-dim); font-size: 9px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .mission-analytics-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    color: var(--text-dim); font-size: 12px;
+  }
+  .mission-analytics-toolbar strong { color: var(--text); }
+  .mission-analytics-toolbar .spacer { flex: 1; }
+  .mission-analytics-custom { display: inline-flex; align-items: center; gap: 6px; }
+  .mission-analytics-custom[hidden] { display: none; }
+  .mission-analytics-custom input {
+    padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 11px;
+  }
+  .mission-trends {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  }
+  .mission-trend-card {
+    min-width: 0; padding: 9px 11px 7px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg);
+  }
+  .mission-trend-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 3px; font-size: 10px; color: var(--text-dim);
+  }
+  .mission-trend-head strong { margin-right: auto; color: var(--text); font-size: 12px; }
+  .mission-trend-head i {
+    display: inline-block; width: 12px; height: 2px; margin-right: 4px;
+    vertical-align: middle; background: currentColor;
+  }
+  .mission-trend-svg { display: block; width: 100%; height: 116px; overflow: visible; }
+  .mission-trend-svg .grid { stroke: var(--border); stroke-width: 1; opacity: .65; }
+  .mission-trend-svg .axis-label { fill: var(--text-dim); font-size: 9px; }
+  .mission-trend-svg .line {
+    fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round;
+  }
+  .mission-trend-svg .line.busy { stroke: #3fb950; }
+  .mission-trend-svg .line.requests { stroke: #58a6ff; }
+  .mission-trend-svg .line.generated { stroke: #a371f7; }
+  .mission-trend-svg .line.request-tokens { stroke: #39c5cf; }
+  .mission-trend-svg circle.busy { fill: #3fb950; }
+  .mission-trend-svg circle.requests { fill: #58a6ff; }
+  .mission-trend-svg circle.generated { fill: #a371f7; }
+  .mission-trend-svg circle.request-tokens { fill: #39c5cf; }
+  .mission-trend-svg circle { stroke-width: 0; }
   .mission-timeline-toolbar {
     display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 13px;
   }
@@ -1280,6 +1323,7 @@
     .sync-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mission-daily-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mission-trends { grid-template-columns: 1fr; }
     .mission-grid { grid-template-columns: 1fr; }
     .mission-gantt-row { grid-template-columns: 180px minmax(520px, 1fr) 220px; }
   }
@@ -2589,11 +2633,37 @@
           <div class="mission-overview" id="mission-timeline-summary" aria-live="polite">
             <strong>Collecting mission summary…</strong>
           </div>
-          <div class="mission-daily-stats" id="mission-daily-stats" aria-label="Today's mission statistics">
-            <div class="mission-daily-stat"><strong>—</strong><span>Generated tokens today</span></div>
-            <div class="mission-daily-stat"><strong>—</strong><span>Busy agent-time today</span></div>
-            <div class="mission-daily-stat"><strong>—</strong><span>Requests sent today</span></div>
-            <div class="mission-daily-stat"><strong>—</strong><span>Request tokens today</span></div>
+          <div class="mission-analytics-toolbar">
+            <strong>Trend range</strong>
+            <select id="mission-analytics-range" title="Analytics date range">
+              <option value="1" selected>Today</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="custom">Custom range</option>
+            </select>
+            <span class="mission-analytics-custom" id="mission-analytics-custom" hidden>
+              <input type="date" id="mission-analytics-start" aria-label="Analytics start date" />
+              <span>to</span>
+              <input type="date" id="mission-analytics-end" aria-label="Analytics end date" />
+              <button class="btn-secondary" id="mission-analytics-apply">Apply</button>
+            </span>
+            <div class="spacer"></div>
+            <span id="mission-analytics-status">Waiting for activity scope…</span>
+          </div>
+          <div class="mission-daily-stats" id="mission-daily-stats" aria-label="Mission statistics for the selected period">
+            <div class="mission-daily-stat"><strong>—</strong><span>Generated tokens</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Busy agent-time</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Requests sent</span></div>
+            <div class="mission-daily-stat"><strong>—</strong><span>Request tokens</span></div>
+          </div>
+          <div class="mission-trends" id="mission-trends" aria-label="Mission trends">
+            <div class="mission-trend-card">
+              <div class="mission-trend-head"><strong>Activity trend</strong><span>Waiting for analytics…</span></div>
+            </div>
+            <div class="mission-trend-card">
+              <div class="mission-trend-head"><strong>Token trend</strong><span>Waiting for analytics…</span></div>
+            </div>
           </div>
           <div class="mission-timeline-toolbar">
             <strong>Session activity</strong>
@@ -3444,6 +3514,10 @@
   let missionView = "timeline";
   let missionTimelineData = null;
   let missionTimelineRequest = 0;
+  let missionAnalyticsData = null;
+  let missionAnalyticsRequest = 0;
+  let missionAnalyticsLastKey = "";
+  let missionAnalyticsLastAt = 0;
 
   function formatMissionDuration(seconds) {
     let value = Math.max(0, Math.floor(Number(seconds || 0)));
@@ -3526,46 +3600,169 @@
     }
   }
 
+  function missionLocalDate(date) {
+    const pad = value => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function missionAnalyticsRange() {
+    const value = $("mission-analytics-range").value || "1";
+    const today = new Date();
+    const end = missionLocalDate(today);
+    if (value === "custom") {
+      return {
+        start: $("mission-analytics-start").value || end,
+        end: $("mission-analytics-end").value || end,
+      };
+    }
+    const days = Math.max(1, Number(value || 1));
+    const startDate = new Date(today);
+    startDate.setDate(startDate.getDate() - days + 1);
+    return { start: missionLocalDate(startDate), end };
+  }
+
+  function missionAnalyticsRangeLabel(data) {
+    if (!data) return "Selected period";
+    if (Number(data.days || 0) === 1) return data.start_date === missionLocalDate(new Date()) ? "Today" : data.start_date;
+    return `${data.start_date} – ${data.end_date}`;
+  }
+
+  function missionTrendPolyline(values, width, height, padding) {
+    const numeric = values.filter(value => value !== null && Number.isFinite(Number(value)));
+    const max = numeric.length ? Math.max(0, ...numeric.map(Number)) : 0;
+    const scaleMax = Math.max(1, max);
+    const step = values.length > 1 ? (width - padding * 2) / (values.length - 1) : 0;
+    const groups = [];
+    let current = [];
+    values.forEach((value, index) => {
+      if (value === null || !Number.isFinite(Number(value))) {
+        if (current.length) groups.push(current);
+        current = [];
+        return;
+      }
+      const x = values.length > 1 ? padding + index * step : width / 2;
+      const y = height - padding - Number(value) * (height - padding * 2) / scaleMax;
+      current.push([x, y]);
+    });
+    if (current.length) groups.push(current);
+    return {
+      max,
+      scaleMax,
+      hasData: numeric.length > 0,
+      paths: groups.map(group => group.map(point => point.join(",")).join(" ")),
+      points: groups.flat(),
+    };
+  }
+
+  function missionTrendChart({ title, series, definitions }) {
+    const width = 700, height = 112, padding = 14;
+    const grids = [0, .5, 1].map(ratio => {
+      const y = padding + ratio * (height - padding * 2);
+      return `<line class="grid" x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" />`;
+    }).join("");
+    const rendered = definitions.map(definition => {
+      const values = series.map(definition.value);
+      const shape = missionTrendPolyline(values, width, height, padding);
+      const paths = shape.paths.map(points =>
+        `<polyline class="line ${definition.className}" points="${points}" />`
+      ).join("");
+      const step = series.length > 1 ? (width - padding * 2) / (series.length - 1) : 0;
+      const points = series.map((row, index) => {
+        const value = values[index];
+        if (value === null || !Number.isFinite(Number(value))) return "";
+        const x = series.length > 1 ? padding + index * step : width / 2;
+        const y = height - padding - Number(value) * (height - padding * 2) / shape.scaleMax;
+        return `<circle class="${definition.className}" cx="${x}" cy="${y}" r="2.5"><title>${escapeHtml(row.date)} · ${escapeHtml(definition.label)}: ${escapeHtml(definition.format(value))}</title></circle>`;
+      }).join("");
+      return { ...definition, paths, points, max: shape.max, hasData: shape.hasData };
+    });
+    const labels = series.length ? [
+      series[0], series[Math.floor((series.length - 1) / 2)], series[series.length - 1],
+    ].map((row, index) => {
+      const x = index === 0 ? padding : index === 1 ? width / 2 : width - padding;
+      const anchor = index === 0 ? "start" : index === 1 ? "middle" : "end";
+      return `<text class="axis-label" x="${x}" y="${height + 9}" text-anchor="${anchor}">${escapeHtml(row.date.slice(5))}</text>`;
+    }).join("") : "";
+    const legend = rendered.map(item =>
+      `<span style="color:${item.color}"><i></i>${escapeHtml(item.label)} · ${item.hasData ? `max ${escapeHtml(item.format(item.max))}` : "no data"}</span>`
+    ).join("");
+    return `<div class="mission-trend-card">
+      <div class="mission-trend-head"><strong>${escapeHtml(title)}</strong>${legend}<span title="Each line uses its own scale">independent scales</span></div>
+      <svg class="mission-trend-svg" viewBox="0 0 ${width} ${height + 12}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(title)}">${grids}${rendered.map(item => item.paths + item.points).join("")}${labels}</svg>
+    </div>`;
+  }
+
+  function renderMissionTrends(data) {
+    const root = $("mission-trends");
+    if (!root) return;
+    const series = data && Array.isArray(data.series) ? data.series : [];
+    if (!series.length) {
+      root.innerHTML = `<div class="mission-trend-card"><div class="mission-trend-head"><strong>Activity trend</strong><span>No data for this range</span></div></div><div class="mission-trend-card"><div class="mission-trend-head"><strong>Token trend</strong><span>No data for this range</span></div></div>`;
+      return;
+    }
+    root.innerHTML = missionTrendChart({
+      title: "Activity trend",
+      series,
+      definitions: [
+        { label: "Busy agent-hours", className: "busy", color: "#3fb950", value: row => Number(row.busy_s || 0) / 3600, format: value => `${Number(value).toFixed(1)}h` },
+        { label: "Requests", className: "requests", color: "#58a6ff", value: row => Number(row.requests || 0), format: value => formatMissionCount(value) },
+      ],
+    }) + missionTrendChart({
+      title: "Token trend",
+      series,
+      definitions: [
+        { label: "Generated", className: "generated", color: "#a371f7", value: row => row.generated_tokens === null ? null : Number(row.generated_tokens || 0), format: value => formatMissionCount(value) },
+        { label: "Request tokens ≈", className: "request-tokens", color: "#39c5cf", value: row => Number(row.request_tokens || 0), format: value => formatMissionCount(value) },
+      ],
+    });
+  }
+
   function renderMissionDailyStats(data) {
     const root = $("mission-daily-stats");
     if (!root) return;
-    const daily = data && data.daily;
-    if (!daily) {
+    if (!data || !data.totals) {
       root.innerHTML = [
-        "Generated tokens today", "Busy agent-time today",
-        "Requests sent today", "Request tokens today",
+        "Generated tokens", "Busy agent-time",
+        "Requests sent", "Request tokens",
       ].map(label => `<div class="mission-daily-stat"><strong>—</strong><span>${label}</span></div>`).join("");
+      renderMissionTrends(null);
       return;
     }
-    const generated = daily.generated_tokens === null
-      || daily.generated_tokens === undefined
+    const totals = data.totals;
+    const generated = totals.generated_tokens === null
+      || totals.generated_tokens === undefined
       ? "—"
-      : formatMissionCount(daily.generated_tokens);
-    const busy = formatMissionDuration(daily.busy_s || 0);
-    const requests = formatMissionCount(daily.requests || 0);
-    const requestTokens = "≈" + formatMissionCount(daily.request_tokens || 0);
-    const coverage = `${Number(daily.metrics_available_sessions || 0)}/${Number(daily.sessions || 0)} transcripts`;
-    const loading = Number(daily.metrics_loading_sessions || 0);
-    const note = loading ? `${coverage} · ${loading} updating` : coverage;
+      : formatMissionCount(totals.generated_tokens);
+    const busy = formatMissionDuration(totals.busy_s || 0);
+    const requests = formatMissionCount(totals.requests || 0);
+    const requestTokens = "≈" + formatMissionCount(totals.request_tokens || 0);
+    const coverage = `${Number(data.metrics_available_sources || 0)}/${Number(data.source_count || 0)} transcripts`;
+    const loading = Number(data.metrics_loading_sources || 0);
+    const note = loading ? `${coverage} · ${loading} indexing` : coverage;
+    const range = missionAnalyticsRangeLabel(data);
     root.innerHTML = `
       <div class="mission-daily-stat" title="Exact assistant output tokens where native usage is available">
-        <strong>${escapeHtml(generated)}</strong><span>Generated tokens today</span><small>${escapeHtml(note)}</small>
+        <strong>${escapeHtml(generated)}</strong><span>Generated tokens</span><small>${escapeHtml(range)} · ${escapeHtml(note)}</small>
       </div>
       <div class="mission-daily-stat" title="Working time summed across sessions; concurrent agents each contribute time">
-        <strong>${escapeHtml(busy)}</strong><span>Busy agent-time today</span><small>${escapeHtml(daily.date || "Local day")}</small>
+        <strong>${escapeHtml(busy)}</strong><span>Busy agent-time</span><small>${escapeHtml(range)}</small>
       </div>
       <div class="mission-daily-stat" title="User messages found in native Codex and Claude transcripts">
-        <strong>${escapeHtml(requests)}</strong><span>Requests sent today</span><small>${escapeHtml(note)}</small>
+        <strong>${escapeHtml(requests)}</strong><span>Requests sent</span><small>${escapeHtml(range)} · ${escapeHtml(note)}</small>
       </div>
       <div class="mission-daily-stat" title="Estimated from user-message UTF-8 size; native transcripts do not provide per-message token counts">
-        <strong>${escapeHtml(requestTokens)}</strong><span>Request tokens today</span><small>estimated · ${escapeHtml(note)}</small>
+        <strong>${escapeHtml(requestTokens)}</strong><span>Request tokens</span><small>${escapeHtml(range)} · estimated · ${escapeHtml(note)}</small>
       </div>`;
+    renderMissionTrends(data);
+    const status = $("mission-analytics-status");
+    if (status) status.textContent = loading
+      ? `${loading} transcript${loading === 1 ? "" : "s"} indexing in background…`
+      : `${Number(data.session_count || 0)} filtered sessions · updated ${new Date().toLocaleTimeString()}`;
   }
 
   function renderMissionTimelineSummary(data, rows) {
     const root = $("mission-timeline-summary");
     if (!root) return;
-    renderMissionDailyStats(data);
     if (!data || !Array.isArray(rows)) {
       root.innerHTML = "<strong>Collecting mission summary…</strong>";
       return;
@@ -3624,6 +3821,20 @@
       + "</span>";
   }
 
+  function missionTimelineRowMatches(row) {
+    const alive = row.alive !== false;
+    const state = alive ? row.current_state : "ended";
+    if (!missionLifecycleMatches(alive)) return false;
+    if (!missionMarkerMatches(row)) return false;
+    if (!missionStateMatches(state, Boolean(row.needs_attention))) return false;
+    const query = String($("mission-timeline-search").value || "").trim().toLowerCase();
+    if (!query) return true;
+    return [
+      row.display_name, row.agent, missionMarker(row), state,
+      alive ? "active" : "ended",
+    ].filter(Boolean).join(" ").toLowerCase().includes(query);
+  }
+
   function renderMissionTimeline() {
     const root = $("mission-gantt");
     if (!root) return;
@@ -3636,20 +3847,7 @@
     const start = Number(data.window_start || 0);
     const end = Number(data.window_end || 0);
     const span = Math.max(1, end - start);
-    const query = String($("mission-timeline-search").value || "").trim().toLowerCase();
-    let rows = data.sessions.filter(row => {
-      const alive = row.alive !== false;
-      const state = alive ? row.current_state : "ended";
-      if (!missionLifecycleMatches(alive)) return false;
-      if (!missionMarkerMatches(row)) return false;
-      if (!missionStateMatches(state, Boolean(row.needs_attention))) return false;
-      if (!query) return true;
-      return [
-        row.display_name, row.agent, missionMarker(row), state,
-        alive ? "active" : "ended",
-      ]
-        .filter(Boolean).join(" ").toLowerCase().includes(query);
-    });
+    let rows = data.sessions.filter(missionTimelineRowMatches);
     const priorityRank = { p0: 0, p1: 1, p2: 2, flag: 3, "": 4 };
     const sort = $("mission-timeline-sort").value || "active";
     rows.sort((a, b) => {
@@ -3746,6 +3944,7 @@
       if (request !== missionTimelineRequest) return;
       missionTimelineData = data;
       if (missionView === "timeline") renderMissionTimeline();
+      if (!$("mission-modal").hidden) refreshMissionAnalytics();
     } catch (error) {
       if (request !== missionTimelineRequest) return;
       $("mission-timeline-summary").innerHTML = "<strong>Mission summary unavailable.</strong>";
@@ -3768,6 +3967,82 @@
       }
     });
     return missionTimelineInFlight;
+  }
+
+  let missionAnalyticsInFlight = null;
+  let missionAnalyticsPending = false;
+  let missionAnalyticsRetryTimer = null;
+  function missionAnalyticsScopeRunIds() {
+    const timelineRows = new Map(
+      (missionTimelineData && Array.isArray(missionTimelineData.sessions)
+        ? missionTimelineData.sessions : []
+      ).map(row => [row.run_id, row]),
+    );
+    return missionRows({ includeEnded: true }).filter(session => {
+      const info = missionInfo(session);
+      const row = timelineRows.get(session.run_id) || {
+        run_id: session.run_id,
+        display_name: session.display_name || session.task || session.run_name,
+        agent: session.agent,
+        alive: session.alive !== false,
+        current_state: session.alive === false ? "ended" : info.state,
+        needs_attention: info.needs_attention,
+        panel_state: session.panel_state,
+        priority: info.priority,
+      };
+      return missionTimelineRowMatches(row);
+    }).map(session => session.run_id).filter(Boolean).sort();
+  }
+
+  async function refreshMissionAnalyticsOnce({ force = false } = {}) {
+    if (!missionTimelineData || !Array.isArray(missionTimelineData.sessions)) return;
+    const range = missionAnalyticsRange();
+    const runIds = missionAnalyticsScopeRunIds();
+    const key = JSON.stringify([range.start, range.end, runIds]);
+    if (!force && key === missionAnalyticsLastKey
+        && Date.now() - missionAnalyticsLastAt < 30000) return;
+    const request = ++missionAnalyticsRequest;
+    const status = $("mission-analytics-status");
+    if (status) status.textContent = "Loading selected range…";
+    try {
+      const data = await api("/api/mission-control/analytics", {
+        method: "POST",
+        body: {
+          start_date: range.start,
+          end_date: range.end,
+          run_ids: runIds,
+        },
+      });
+      if (request !== missionAnalyticsRequest) return;
+      missionAnalyticsData = data;
+      missionAnalyticsLastKey = key;
+      missionAnalyticsLastAt = Date.now();
+      renderMissionDailyStats(data);
+      clearTimeout(missionAnalyticsRetryTimer);
+      if (Number(data.metrics_loading_sources || 0) > 0 && !$("mission-modal").hidden) {
+        missionAnalyticsRetryTimer = setTimeout(
+          () => refreshMissionAnalytics({ force: true }), 5000,
+        );
+      }
+    } catch (error) {
+      if (request !== missionAnalyticsRequest) return;
+      if (status) status.textContent = `Analytics unavailable: ${error.message}`;
+    }
+  }
+
+  function refreshMissionAnalytics(options = {}) {
+    if (missionAnalyticsInFlight) {
+      missionAnalyticsPending = true;
+      return missionAnalyticsInFlight;
+    }
+    missionAnalyticsInFlight = refreshMissionAnalyticsOnce(options).finally(() => {
+      missionAnalyticsInFlight = null;
+      if (missionAnalyticsPending) {
+        missionAnalyticsPending = false;
+        refreshMissionAnalytics({ force: true });
+      }
+    });
+    return missionAnalyticsInFlight;
   }
 
   function missionRows({ includeEnded = false } = {}) {
@@ -3934,7 +4209,10 @@
     setMissionView(missionView);
   }
 
-  function closeMissionControl() { $("mission-modal").hidden = true; }
+  function closeMissionControl() {
+    $("mission-modal").hidden = true;
+    clearTimeout(missionAnalyticsRetryTimer);
+  }
 
   $("btn-mission-control").addEventListener("click", openMissionControl);
   $("mission-close").addEventListener("click", closeMissionControl);
@@ -3945,6 +4223,7 @@
     try {
       await refreshList();
       await refreshMissionTimeline();
+      await refreshMissionAnalytics({ force: true });
       renderMissionControl();
     }
     finally { btn.disabled = false; }
@@ -3954,9 +4233,36 @@
   });
   $("mission-search").addEventListener("input", renderMissionControl);
   $("mission-sort").addEventListener("change", renderMissionControl);
-  $("mission-timeline-search").addEventListener("input", renderMissionTimeline);
+  let missionAnalyticsSearchTimer = null;
+  $("mission-timeline-search").addEventListener("input", () => {
+    renderMissionTimeline();
+    clearTimeout(missionAnalyticsSearchTimer);
+    missionAnalyticsSearchTimer = setTimeout(
+      () => refreshMissionAnalytics({ force: true }), 250,
+    );
+  });
   $("mission-timeline-sort").addEventListener("change", renderMissionTimeline);
   $("mission-timeline-hours").addEventListener("change", refreshMissionTimeline);
+  const missionToday = missionLocalDate(new Date());
+  $("mission-analytics-start").value = missionToday;
+  $("mission-analytics-end").value = missionToday;
+  $("mission-analytics-start").max = missionToday;
+  $("mission-analytics-end").max = missionToday;
+  $("mission-analytics-range").addEventListener("change", event => {
+    const custom = event.currentTarget.value === "custom";
+    $("mission-analytics-custom").hidden = !custom;
+    if (!custom) refreshMissionAnalytics({ force: true });
+  });
+  $("mission-analytics-apply").addEventListener("click", () => {
+    const start = $("mission-analytics-start").value;
+    const end = $("mission-analytics-end").value;
+    if (!start || !end) return;
+    if (start > end) {
+      $("mission-analytics-status").textContent = "Start date must not be after end date.";
+      return;
+    }
+    refreshMissionAnalytics({ force: true });
+  });
   document.querySelectorAll("[data-mission-view]").forEach(btn => {
     btn.addEventListener("click", () => setMissionView(btn.dataset.missionView));
   });
@@ -3971,6 +4277,7 @@
         renderMissionControl();
         if (refreshTimeline) refreshMissionTimeline();
         else renderMissionTimeline();
+        refreshMissionAnalytics({ force: true });
       });
     });
   }
