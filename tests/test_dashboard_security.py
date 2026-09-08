@@ -669,6 +669,10 @@ class TerminalThemeTests(unittest.TestCase):
         self.assertIn(b"_oscLinkService", patched)
         self.assertIn(b"getLinkData", patched)
         self.assertIn(b"extended.urlId", patched)
+        self.assertIn(b"cleanHttpUrl", patched)
+        self.assertIn("（【《〈「『〔［｛，。；：！？、".encode(), patched)
+        self.assertIn(b"cleanHttpUrl(oscUrl)", patched)
+        self.assertIn(b"cleanHttpUrl(raw)", patched)
         self.assertIn(b"window.open(pendingUrl", patched)
         self.assertEqual(
             terminal_theme.patch_ttyd_index_interactions(patched),

@@ -135,6 +135,18 @@ _TTYD_INTERACTION_SCRIPT = r"""<script id="orch-ttyd-interactions-v1">
     );
     mouse.__orchInteractionPatch = true;
 
+    const cleanHttpUrl = (value) => {
+      let url = String(value || "");
+      // Terminal linkifiers do not consistently recognize CJK punctuation
+      // as a URL boundary. In prose such as `https://example.test（details）`,
+      // trim the annotation before opening the target instead of letting the
+      // browser percent-encode it as part of the path.
+      const cjkBoundary = url.search(/[（【《〈「『〔［｛，。；：！？、]/u);
+      if (cjkBoundary >= 0) url = url.slice(0, cjkBoundary);
+      url = url.replace(/[.,;:!?]+$/, "");
+      return /^https?:\/\//i.test(url) ? url : "";
+    };
+
     const coordsForEvent = (event) => {
       try {
         const coords = selection._getMouseBufferCoords(event);
@@ -179,7 +191,8 @@ _TTYD_INTERACTION_SCRIPT = r"""<script id="orch-ttyd-interactions-v1">
           const oscUrl = typeof linkData === "string"
             ? linkData
             : String((linkData && (linkData.uri || linkData.url)) || "");
-          if (/^https?:\/\//i.test(oscUrl)) return oscUrl;
+          const cleanOscUrl = cleanHttpUrl(oscUrl);
+          if (cleanOscUrl) return cleanOscUrl;
         }
       } catch (_) {}
 
@@ -197,7 +210,7 @@ _TTYD_INTERACTION_SCRIPT = r"""<script id="orch-ttyd-interactions-v1">
       const pattern = /https?:\/\/[^\s<>"'`]+/g;
       for (const match of text.matchAll(pattern)) {
         const raw = match[0];
-        const url = raw.replace(/[.,;:!?]+$/, "");
+        const url = cleanHttpUrl(raw);
         const begin = match.index || 0;
         if (offset >= begin && offset < begin + url.length) return url;
       }
