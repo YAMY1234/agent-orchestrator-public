@@ -59,6 +59,7 @@ from .conversation_metrics import TranscriptMetricsCache
 from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
 from .json_store import edit_json, write_json
 from .local_settings import dashboard_token, require_dashboard_auth
+from .native_activity import NativeActivityService
 from .sync_status import SyncStatusService, load_settings as load_sync_settings
 from .sync_transfer import TransferCancelled
 from .terminal_theme import (
@@ -5454,15 +5455,21 @@ def _daily_summary_html(summary: dict[str, Any]) -> str:
 </html>"""
 
 
-def _discover_runs(outputs_dir: Path) -> list[dict[str, Any]]:
+def _discover_runs(
+    outputs_dir: Path,
+    native_activity: NativeActivityService | None = None,
+) -> list[dict[str, Any]]:
     # Activity hashes and timeline intervals are shared mutable process state.
     # Serialize discovery so the browser poll and fallback sampler cannot turn
     # one observation into artificial state transitions.
     with _DISCOVER_RUNS_LOCK:
-        return _discover_runs_unlocked(outputs_dir)
+        return _discover_runs_unlocked(outputs_dir, native_activity)
 
 
-def _discover_runs_unlocked(outputs_dir: Path) -> list[dict[str, Any]]:
+def _discover_runs_unlocked(
+    outputs_dir: Path,
+    native_activity: NativeActivityService | None = None,
+) -> list[dict[str, Any]]:
     if not outputs_dir.exists():
         return []
     runs: list[dict[str, Any]] = []
@@ -5754,6 +5761,16 @@ def _discover_runs_unlocked(outputs_dir: Path) -> list[dict[str, Any]]:
             _SESSION_LAST_CHANGE.pop(dead_sess, None)
             _SESSION_ACTIVITY_STREAK_START.pop(dead_sess, None)
             _SESSION_LAST_SUSTAINED_ACTIVE.pop(dead_sess, None)
+
+    if native_activity is not None:
+        tracked_rows: list[dict[str, Any]] = []
+        for run in runs:
+            tracked = dict(run)
+            transcript = _conversation_transcript_path(run)
+            tracked["_native_transcript_path"] = str(transcript or "")
+            tracked_rows.append(tracked)
+        native_activity.register_runs(tracked_rows)
+        native_activity.apply(runs)
 
     _record_activity_timeline_snapshot(outputs_dir, runs)
 
@@ -6904,6 +6921,8 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         os.environ.get("ORCH_DASHBOARD_CONFIG", str(DEFAULT_DASHBOARD_CONFIG))
     ).expanduser()
     sync_settings = load_sync_settings(dashboard_config_path)
+    native_activity = NativeActivityService()
+
     def scan_session_snapshot() -> list[dict[str, Any]]:
         # Reaping shares the same low-frequency worker as discovery. HTTP
         # readers must never wait for tmux housekeeping.
@@ -6911,7 +6930,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             ttyd.reap_dead(min_interval_s=0)
         except Exception:
             pass
-        return _discover_runs(outputs_dir)
+        return _discover_runs(outputs_dir, native_activity)
 
     session_snapshots = SessionSnapshotService(
         scan_session_snapshot,
@@ -6947,6 +6966,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        native_activity.start()
         sync_status.start()
         session_snapshots.start()
         if (app.state.active_snapshot_autosave_enabled
@@ -6999,6 +7019,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             app.state.active_snapshot_autosave_stop = None
             app.state.active_snapshot_autosave_thread = None
             session_snapshots.stop(timeout=3)
+            native_activity.stop(timeout=2)
             _flush_activity_timeline(outputs_dir)
             sync_status.stop()
 
@@ -7017,6 +7038,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     app.state.active_snapshot_autosave_stop = None
     app.state.active_snapshot_autosave_thread = None
     app.state.session_snapshots = session_snapshots
+    app.state.native_activity = native_activity
     app.state.sync_status = sync_status
 
     # Optional background publisher: write current URL to iCloud Drive so a
@@ -7113,6 +7135,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 "sample_interval_seconds": 10.0,
                 "retention_hours": _ACTIVITY_TIMELINE_RETENTION_SECONDS / 3600.0,
                 "daily_retention_days": _ACTIVITY_DAILY_RETENTION_DAYS,
+            },
+            "native_activity": {
+                "enabled": True,
+                "poll_interval_seconds": native_activity.poll_interval_s,
             },
             "session_snapshot": {
                 key: snapshot[key]
@@ -7460,8 +7486,9 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         # seconds. request_refresh coalesces while a scan is already running,
         # so slow workspaces never build an unbounded request queue.
         session_snapshots.request_refresh(min_age_s=4.5)
+        sessions = native_activity.apply(snapshot["sessions"])
         return {
-            "sessions": snapshot["sessions"],
+            "sessions": sessions,
             "instance_id": dashboard_instance_id,
             "snapshot": {
                 key: snapshot[key]
@@ -7470,6 +7497,14 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                     "scan_duration_s", "error",
                 )
             },
+        }
+
+    @app.get("/api/native-activity")
+    def native_session_activity():
+        """Return cheap native lifecycle deltas for frequent UI polling."""
+        return {
+            "sessions": native_activity.snapshot(),
+            "updated_at": time.time(),
         }
 
     @app.get("/api/sessions/{run_id}")

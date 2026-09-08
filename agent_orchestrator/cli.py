@@ -28,6 +28,7 @@ from .local_settings import (
     is_loopback_host,
     require_dashboard_auth,
 )
+from .native_activity import handle_claude_hook, install_claude_hooks
 from .state import StateManager
 from .task_runner import TaskRunner
 
@@ -982,6 +983,33 @@ def cmd_dashboard(args):
         _cleanup()
 
 
+def cmd_agent_event(args):
+    """Receive a native agent lifecycle hook without affecting the agent."""
+    try:
+        payload = json.load(sys.stdin)
+        if isinstance(payload, dict):
+            response = handle_claude_hook(
+                payload, permission_policy=args.permission_policy,
+            )
+            if response is not None:
+                json.dump(response, sys.stdout, separators=(",", ":"))
+                sys.stdout.write("\n")
+    except Exception as exc:
+        # Hook stdout can become model context, so diagnostics stay on stderr.
+        print(f"orch agent-event ignored: {exc}", file=sys.stderr)
+
+
+def cmd_install_agent_hooks(args):
+    settings = Path(args.claude_settings).expanduser() if args.claude_settings else None
+    path, changed = install_claude_hooks(
+        settings,
+        orch_path=args.orch_path,
+        permission_policy=args.claude_permission_policy,
+    )
+    action = "installed" if changed else "already installed"
+    print(f"Claude lifecycle hooks {action}: {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Agent Orchestrator")
     sub = parser.add_subparsers(dest="command")
@@ -1121,6 +1149,36 @@ def main():
     p_url.add_argument("--json", action="store_true",
                        help="emit JSON with all candidates")
     p_url.set_defaults(func=cmd_url)
+
+    p_agent_event = sub.add_parser("agent-event", help=argparse.SUPPRESS)
+    p_agent_event.add_argument("--agent", required=True, choices=("claude",))
+    p_agent_event.add_argument(
+        "--permission-policy", default="observe",
+        choices=("observe", "orchestrator"),
+    )
+    p_agent_event.set_defaults(func=cmd_agent_event)
+
+    p_hooks = sub.add_parser(
+        "install-agent-hooks",
+        help="Install native lifecycle hooks for supported terminal agents",
+    )
+    p_hooks.add_argument(
+        "--claude-settings", default="",
+        help="Claude settings JSON (default: ~/.claude/settings.json)",
+    )
+    p_hooks.add_argument(
+        "--orch-path", default="",
+        help="orch executable recorded in hook commands (default: auto-detect)",
+    )
+    p_hooks.add_argument(
+        "--claude-permission-policy", default="observe",
+        choices=("observe", "orchestrator"),
+        help=(
+            "native Claude permission handling: observe only (default), or "
+            "auto-approve requests from Orchestrator-launched sessions"
+        ),
+    )
+    p_hooks.set_defaults(func=cmd_install_agent_hooks)
 
     args = parser.parse_args()
     if not args.command:
