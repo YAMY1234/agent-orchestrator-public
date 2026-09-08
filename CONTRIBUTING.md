@@ -23,7 +23,11 @@ Run the same lightweight checks used in continuous integration:
 python -W error -m unittest discover -s tests -v
 python -m py_compile *.py agent_orchestrator/*.py scripts/*.py launchd/*.py
 bash -n scripts/*.sh launchd/*.sh
+python -m json.tool examples/dashboard.local.json >/dev/null
 ```
+
+Dashboard changes should also parse the final inline `<script>` block with
+Node.js; CI performs this check automatically.
 
 Application modules live in `agent_orchestrator/`. The root-level
 `orchestrator.py` and `dashboard.py` files are compatibility entrypoints; add
@@ -31,6 +35,8 @@ new Python implementation code to the package instead of the repository root.
 
 For dashboard changes, also start a local instance, create a background
 session, attach a terminal pane, send input, and stop the session cleanly.
+Remote Nodes changes should additionally start a temporary node-only instance
+and verify session discovery plus HTTP/WebSocket terminal proxying.
 
 ## Pull requests
 

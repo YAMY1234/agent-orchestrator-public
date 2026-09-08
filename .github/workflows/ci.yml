@@ -24,3 +24,14 @@ jobs:
       - run: python -W error -m unittest discover -s tests -v
       - run: python -m py_compile *.py agent_orchestrator/*.py scripts/*.py launchd/*.py
       - run: bash -n scripts/*.sh launchd/*.sh
+      - name: Validate examples and inline Dashboard JavaScript
+        run: |
+          python -m json.tool examples/dashboard.local.json >/dev/null
+          node - <<'JS'
+          const fs = require("fs");
+          const source = fs.readFileSync("static/index.html", "utf8");
+          const start = source.lastIndexOf("<script>");
+          const end = source.indexOf("</script>", start);
+          if (start < 0 || end < 0) throw new Error("inline script block missing");
+          new Function(source.slice(start + "<script>".length, end));
+          JS
