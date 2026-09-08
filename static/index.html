@@ -111,25 +111,8 @@
   }
   .brand h1 { margin: 0; font-size: 14px; }
   .brand .ctrls { display: flex; gap: 6px; }
-  /* Sidebar "show" filter: All / Active / Ended. Compact row, tight border */
-  .sess-filter {
-    display: flex; gap: 2px; padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .sess-filter button {
-    flex: 1; padding: 4px 0; font-size: 11px;
-    background: transparent; border: 1px solid var(--border);
-    color: var(--text-dim); cursor: pointer; border-radius: 4px;
-  }
-  .sess-filter button.on {
-    background: var(--bg-elev); color: var(--text);
-    border-color: var(--accent);
-  }
-  /* Sidebar search row — filters the currently visible list (Active /
-     Ended / Projects) on the client side. For Projects, an extra
-     "content:" prefix triggers a backend full-text search across all
-     archived log files. */
+  /* Sidebar search row. The archived-project implementation still supports
+     the "content:" prefix for backend full-text search across archived logs. */
   .sess-search {
     display: flex; gap: 4px; padding: 6px 10px;
     border-bottom: 1px solid var(--border);
@@ -182,6 +165,14 @@
   }
   .sess-priority-filter button[data-priority-filter="p2"].on {
     color: #58a6ff; border-color: rgba(88,166,255,0.68);
+  }
+  .sess-priority-filter button[data-activity-filter="working"].on {
+    color: var(--ok); border-color: rgba(63,185,80,0.75);
+    background: rgba(63,185,80,0.08);
+  }
+  .sess-priority-filter button[data-unread-filter].on {
+    color: #e3b341; border-color: rgba(227,179,65,0.78);
+    background: rgba(227,179,65,0.09);
   }
   /* "Searching logs…" indicator */
   .sess-search-status {
@@ -245,25 +236,67 @@
     overflow-y: auto; flex: 1 1 0; min-height: 0;
     -webkit-overflow-scrolling: touch;
   }
-  .session-group { border-bottom: 1px solid var(--border); }
-  .session-group-head {
-    display: flex; align-items: center; gap: 6px;
-    padding: 5px 14px;
+  .session-location-group {
+    --location-accent: var(--accent);
+    --location-tint: rgba(88, 166, 255, 0.09);
+    margin: 8px 7px 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--location-accent);
+    border-radius: 7px;
     background: var(--bg);
-    border-top: 1px solid var(--border);
+  }
+  .session-location-group + .session-location-group { margin-top: 16px; }
+  .session-location-group.location-tone-local {
+    --location-accent: #58a6ff;
+    --location-tint: rgba(88, 166, 255, 0.11);
+  }
+  .session-location-group.location-tone-remote-1 {
+    --location-accent: #39c5cf;
+    --location-tint: rgba(57, 197, 207, 0.11);
+  }
+  .session-location-group.location-tone-remote-2 {
+    --location-accent: #a371f7;
+    --location-tint: rgba(163, 113, 247, 0.12);
+  }
+  .session-location-group.location-tone-remote-3 {
+    --location-accent: #d29922;
+    --location-tint: rgba(210, 153, 34, 0.11);
+  }
+  .session-location-head {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 12px;
+    background: var(--location-tint);
     border-bottom: 1px solid var(--border);
-    color: var(--text-dim);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.35px;
+    color: var(--text);
+    font-size: 11px;
+    letter-spacing: 0.25px;
     user-select: none;
     cursor: pointer;
   }
-  .session-group-head:hover { color: var(--text); background: var(--bg-elev); }
-  .session-group-head .caret { width: 8px; opacity: 0.75; }
-  .session-group-head .name { flex: 1; font-weight: 700; }
-  .session-group-head .cnt { opacity: 0.65; }
-  .session-group.collapsed .session-group-body { display: none; }
+  .session-location-head:hover { filter: brightness(1.2); }
+  .session-location-head .caret { width: 8px; color: var(--location-accent); }
+  .session-location-head .name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-weight: 750; color: var(--location-accent);
+  }
+  .session-location-head .cnt { color: var(--text-dim); }
+  .node-reconnect-btn {
+    border: 1px solid var(--accent); background: transparent;
+    color: var(--accent); border-radius: 5px; padding: 2px 7px;
+    font: inherit; letter-spacing: 0; cursor: pointer;
+  }
+  .node-reconnect-btn:hover { background: rgba(88,166,255,0.12); }
+  .session-location-group.offline > .session-location-head .name {
+    color: var(--text-dim);
+  }
+  .session-location-group.offline {
+    --location-accent: var(--err);
+    --location-tint: rgba(248, 81, 73, 0.08);
+  }
+  .session-location-group.collapsed > .session-location-body { display: none; }
+  .session-location-body { background: var(--bg-soft); }
+  .session-location-body > .session-item:last-child { border-bottom: 0; }
   /* Extra per-item action buttons (clone / clone-w-log / log-viewer) */
   .session-item .si-actions {
     display: none;
@@ -319,6 +352,24 @@
   }
   .si-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .si-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .pane-node-badge {
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border: 1px solid rgba(88,166,255,.45);
+    border-radius: 999px;
+    color: var(--accent);
+    background: rgba(88,166,255,.08);
+    font: 700 9px/1.35 ui-monospace, "SF Mono", Menlo, monospace;
+    max-width: 88px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pane-node-badge.offline {
+    color: var(--text-dim);
+    border-color: var(--border);
+    background: transparent;
+  }
   .si-meta { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .session-flag-badge {
     flex-shrink: 0;
@@ -356,6 +407,55 @@
   @keyframes dot-busy-pulse {
     0%, 100% { box-shadow: 0 0 4px var(--ok); opacity: 1; }
     50%      { box-shadow: 0 0 12px var(--ok); opacity: 0.65; }
+  }
+  /* Native agent lifecycle says this session is executing a turn. Replace
+     the generic availability dot with a compact spinner so "working" is
+     visually distinct from merely alive or receiving terminal output. */
+  .dot.agent-working {
+    width: 10px; height: 10px;
+    box-sizing: border-box;
+    background: transparent;
+    border: 2px solid rgba(63,185,80,0.24);
+    border-top-color: var(--ok);
+    box-shadow: none;
+    animation: agent-working-spin 0.75s linear infinite;
+  }
+  @keyframes agent-working-spin { to { transform: rotate(360deg); } }
+  /* Background work can keep making progress after the agent returns to its
+     prompt. Keep it visibly active, but use a softer green so it is distinct
+     from a foreground turn without looking like an attention warning. */
+  .dot.background-working {
+    width: 10px; height: 10px;
+    box-sizing: border-box;
+    background: transparent;
+    border: 2px solid rgba(86,211,164,0.22);
+    border-top-color: #56d3a4;
+    box-shadow: none;
+    animation: agent-working-spin 1.05s linear infinite;
+  }
+  .dot.unread-ready,
+  .dot.unread-reminder,
+  .dot.unread-needs-input {
+    width: 10px; height: 10px;
+    border: 0;
+    animation: none;
+  }
+  .dot.unread-ready {
+    background: #e3b341;
+    box-shadow: 0 0 8px rgba(227,179,65,0.82);
+  }
+  .dot.unread-reminder {
+    background: #f0883e;
+    box-shadow: 0 0 10px rgba(240,136,62,0.88);
+    animation: unread-reminder-pulse 1.35s ease-in-out infinite;
+  }
+  .dot.unread-needs-input {
+    background: #ff7b72;
+    box-shadow: 0 0 10px rgba(255,123,114,0.9);
+  }
+  @keyframes unread-reminder-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .62; transform: scale(.82); }
   }
   .dot.archived{ background: transparent; border: 1px solid var(--text-dim); }
 
@@ -557,24 +657,34 @@
     outline: 2px solid var(--accent);
     outline-offset: -2px;
   }
-  /* Busy = tmux pane content is currently changing by the existing short-window
-     probe. Idle tone is derived from the user-selected panel state. */
+  /* Pane borders answer one question only: does this session need attention?
+     Priority remains visible in the P0/P1/P2 badge and never owns the border. */
   .pane-card.busy {
     border-color: var(--ok);
     animation: pane-busy-pulse 1.4s ease-in-out infinite;
   }
-  .pane-card.idle-p0 {
-    border-color: var(--err);
+  .pane-card.background-working {
+    border-color: #56d3a4;
+    animation: pane-background-pulse 2s ease-in-out infinite;
   }
-  .pane-card.idle-p1 {
-    border-color: var(--warn);
+  .pane-card.attention-ready {
+    border-color: #e3b341;
   }
-  .pane-card.idle-blocked {
-    border-color: #bc8cff;
+  .pane-card.attention-reminder {
+    border-color: #f0883e;
+    box-shadow: 0 0 0 2px rgba(240,136,62,.20);
+  }
+  .pane-card.attention-needs-input {
+    border-color: #ff7b72;
+    box-shadow: 0 0 0 2px rgba(255,123,114,.22);
   }
   @keyframes pane-busy-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.00); }
     50%      { box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.35); }
+  }
+  @keyframes pane-background-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(86,211,164,0); }
+    50%      { box-shadow: 0 0 0 2px rgba(86,211,164,.20); }
   }
 
   .pane-card.empty-slot {
@@ -612,6 +722,20 @@
     background: var(--bg-elev);
     font-size: 12px;
     min-width: 0;
+  }
+  /* Unread state lives in the header, not the pane border: P0/P1/Blocked
+     keep exclusive ownership of border color. */
+  .pane-head.unread-ready {
+    background: linear-gradient(90deg, rgba(227,179,65,.18), var(--bg-elev) 52%);
+    box-shadow: inset 0 -1px rgba(227,179,65,.52);
+  }
+  .pane-head.unread-reminder {
+    background: linear-gradient(90deg, rgba(240,136,62,.23), var(--bg-elev) 58%);
+    box-shadow: inset 0 -1px rgba(240,136,62,.68);
+  }
+  .pane-head.unread-needs-input {
+    background: linear-gradient(90deg, rgba(248,81,73,.22), var(--bg-elev) 58%);
+    box-shadow: inset 0 -1px rgba(255,123,114,.72);
   }
   .pane-drag-region {
     flex: 1 1 80px;
@@ -726,6 +850,23 @@
   .pane-idle[data-mode="ended"] {
     color: var(--idle);
     border-color: var(--border);
+  }
+  .pane-idle[data-mode="exited"] {
+    color: #ff7b72;
+    border-color: rgba(248,81,73,0.62);
+    background: rgba(248,81,73,0.08);
+  }
+  .pane-head .btn-end-session {
+    color: #ff7b72;
+    border-color: rgba(248,81,73,0.62);
+    background: rgba(248,81,73,0.08);
+    font-size: 13px;
+    line-height: 1;
+  }
+  .pane-head .btn-end-session:hover {
+    color: #ffa198;
+    border-color: #ff7b72;
+    background: rgba(248,81,73,0.15);
   }
   .pane-state-select[data-state="p0"] { color: #ff7b72; border-color: rgba(248,81,73,0.75); }
   .pane-state-select[data-state="p1"] { color: #d29922; border-color: rgba(210,153,34,0.75); }
@@ -987,6 +1128,40 @@
   }
   .modal-close:hover { color: var(--text); }
   .modal-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .reconnect-modal { max-width: 620px; background: var(--bg-soft); }
+  .reconnect-steps {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .reconnect-step {
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 8px; color: var(--text-dim); font-size: 11px;
+  }
+  .reconnect-step.current { border-color: var(--accent); color: var(--text); }
+  .reconnect-step.done { border-color: var(--ok); color: var(--ok); }
+  .reconnect-message {
+    min-height: 42px; padding: 10px 12px; border-radius: 7px;
+    background: var(--bg); border: 1px solid var(--border);
+    line-height: 1.55;
+  }
+  .reconnect-challenge {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px; align-items: center; padding: 10px 12px;
+    border: 1px solid var(--accent); border-radius: 7px;
+    background: rgba(88,166,255,0.08);
+  }
+  .reconnect-code {
+    font-size: 20px; font-weight: 750; letter-spacing: 1.5px;
+    color: var(--text); user-select: all;
+  }
+  .reconnect-link { overflow-wrap: anywhere; }
+  .reconnect-warnings {
+    color: var(--warn); font-size: 11px; line-height: 1.45;
+    white-space: pre-line;
+  }
+  @media (max-width: 620px) {
+    .reconnect-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   .fld { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
   .fld span { color: var(--text-dim); }
   .fld em { color: #6e7681; font-style: normal; }
@@ -2395,9 +2570,9 @@
   }
   .btn-secondary:hover { border-color: #8b949e; }
 
-  /* ---------- Idle-notification toast stack ----------
-     Fires when a session transitions from busy → idle (agent stopped
-     producing output for ≥ IDLE_TRIGGER_MS and is waiting for the user).
+  /* ---------- Agent-notification toast stack ----------
+     Fires from native Codex/Claude lifecycle events when a turn finishes
+     or explicitly needs input. Terminal screen changes never trigger it.
      Stacks bottom-right; each toast auto-dismisses after 8s unless the
      user hovers, and clicking it focuses the session in a pane. */
   .toast-stack {
@@ -2478,11 +2653,6 @@
         <button id="btn-refresh" title="Refresh list">↻</button>
       </div>
     </div>
-    <div class="sess-filter" id="sess-filter">
-      <button data-view="active" class="on" title="Running tmux sessions in outputs/">Active</button>
-      <button data-view="ended" title="Ended sessions in outputs/ (not yet archived)">Ended</button>
-      <button data-view="projects" title="Archived sessions in projects/ (by `orch organize`)">Projects</button>
-    </div>
     <div class="sess-search" id="sess-search">
       <input type="search" id="sess-search-input" placeholder="Filter by name…"
              autocomplete="off" spellcheck="false" />
@@ -2490,6 +2660,8 @@
     </div>
     <div class="sess-priority-filter" id="sess-priority-filter" hidden>
       <button data-priority-filter="all" class="on">All</button>
+      <button data-activity-filter="working" title="Agent is working right now">Active</button>
+      <button data-unread-filter title="Waiting sessions not inspected yet">Unread</button>
       <button data-priority-filter="p0">P0</button>
       <button data-priority-filter="p1">P1</button>
       <button data-priority-filter="p2">P2</button>
@@ -2521,6 +2693,12 @@
         <button class="modal-close" id="new-close" title="Close">×</button>
       </div>
       <div class="modal-body">
+        <label class="fld" id="new-node-field" hidden>
+          <span>Run on</span>
+          <select id="new-node">
+            <option value="local">Local</option>
+          </select>
+        </label>
         <label class="fld">
           <span>Mode</span>
           <select id="new-kind">
@@ -2583,6 +2761,40 @@
         <button class="btn-secondary" id="new-cancel">Cancel</button>
         <button class="btn-secondary" id="new-submit">Open iTerm &amp; Start</button>
         <button class="btn-primary" id="new-submit-bg">Start in background</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-scrim" id="reconnect-modal" hidden>
+    <div class="modal reconnect-modal">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title" id="reconnect-title">Reconnect remote node</div>
+          <div class="sync-meta">The remote sessions remain untouched while connectivity is restored.</div>
+        </div>
+        <button class="modal-close" id="reconnect-close" title="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="reconnect-steps" id="reconnect-steps">
+          <div class="reconnect-step" data-reconnect-stage="transport">1 · SSH</div>
+          <div class="reconnect-step" data-reconnect-stage="credentials">2 · Credentials</div>
+          <div class="reconnect-step" data-reconnect-stage="service">3 · Dashboard</div>
+          <div class="reconnect-step" data-reconnect-stage="verify">4 · Health check</div>
+        </div>
+        <div class="reconnect-message" id="reconnect-message">Preparing reconnect…</div>
+        <div class="reconnect-challenge" id="reconnect-challenge" hidden>
+          <div>
+            <div class="reconnect-code" id="reconnect-code" hidden></div>
+            <a class="reconnect-link" id="reconnect-link" href="#" target="_blank" rel="noopener">Open verification page</a>
+          </div>
+          <button class="btn-secondary" id="reconnect-copy" hidden>Copy code</button>
+        </div>
+        <div class="reconnect-warnings" id="reconnect-warnings" hidden></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-secondary" id="reconnect-cancel" hidden>Cancel reconnect</button>
+        <button class="btn-primary" id="reconnect-continue" hidden>I've verified · Continue</button>
+        <button class="btn-secondary" id="reconnect-close-2">Close</button>
       </div>
     </div>
   </div>
@@ -2856,11 +3068,13 @@
     projects_browser_url: "http://127.0.0.1:8080/",
     git_status_url: "http://127.0.0.1:8501/",
     projects_root: "~",
+    remote_nodes: [],
   };
   let NOTES_URL = DEFAULT_DASHBOARD_CONFIG.notes_url;
   let PROJECTS_BROWSER_URL = DEFAULT_DASHBOARD_CONFIG.projects_browser_url;
   let GIT_STATUS_URL = DEFAULT_DASHBOARD_CONFIG.git_status_url;
   let PROJECTS_ROOT = DEFAULT_DASHBOARD_CONFIG.projects_root;
+  let REMOTE_NODES = [];
   const PROJECTS_BROWSER_TABS_KEY = "orch_projects_browser_tabs_v1";
   const GLOBAL_TERMINAL_THEME_KEY = "orch_global_terminal_theme";
   const DEFAULT_TERMINAL_THEME = "soft-dark";
@@ -2891,7 +3105,10 @@
   ];
   const TERMINAL_THEME_VALUES = new Set(TERMINAL_THEME_OPTIONS.map(([value]) => value));
   const PANEL_STATE_SORT_ORDER = ["p0", "p1", "p2", "blocked", "watching", "done"];
-  const PANE_IDLE_TONE_CLASSES = ["idle-p0", "idle-p1", "idle-blocked"];
+  const PANE_ACTIVITY_CLASSES = ["busy", "background-working"];
+  const PANE_ATTENTION_CLASSES = [
+    "attention-ready", "attention-reminder", "attention-needs-input",
+  ];
   const SIDEBAR_PRIORITY_FILTERS = [
     ["all", "All"],
     ["p0", "P0"],
@@ -2909,6 +3126,10 @@
     PROJECTS_BROWSER_URL = String(config.projects_browser_url || "").trim();
     GIT_STATUS_URL = String(config.git_status_url || "").trim();
     PROJECTS_ROOT = String(config.projects_root || "").trim();
+    REMOTE_NODES = Array.isArray(config.remote_nodes)
+      ? config.remote_nodes.map(node => Object.assign({}, node)) : [];
+
+    renderNodePicker();
 
     const notesBtn = $("btn-open-notes");
     const notesUrl = $("notes-modal-url");
@@ -3284,6 +3505,53 @@
 
   // ---------- Global state ----------
   let sessions = [];
+  // A session-list poll can start before a panel-state POST and finish after
+  // it. Keep the user's newest choice authoritative until a later snapshot
+  // explicitly acknowledges it; otherwise the stale poll makes P0/Flag look
+  // as if it was cleared when the user switches panes quickly.
+  const pendingPanelStates = new Map();
+  let panelStateMutationSequence = 0;
+
+  function mergePendingPanelStates(nextSessions) {
+    for (const session of nextSessions) {
+      const pending = pendingPanelStates.get(session.run_id);
+      if (!pending) continue;
+      const serverValue = String(session.panel_state || "").toLowerCase();
+      if (pending.confirmed && serverValue === pending.value) {
+        pendingPanelStates.delete(session.run_id);
+      } else {
+        session.panel_state = pending.value;
+      }
+    }
+    return nextSessions;
+  }
+
+  function remoteNodeIdFromRunId(runId) {
+    const value = String(runId || "");
+    if (!value.startsWith("remote~")) return "";
+    const separator = value.indexOf("~", "remote~".length);
+    return separator > "remote~".length
+      ? value.slice("remote~".length, separator) : "";
+  }
+
+  function retainMissingRemoteSlot(runId, nodeStates) {
+    const nodeId = remoteNodeIdFromRunId(runId);
+    if (!nodeId) return false;
+    const configured = REMOTE_NODES.some(
+      node => String(node?.id || "") === nodeId
+    );
+    if (!configured) return false;
+    const state = (nodeStates || []).find(
+      node => String(node?.id || "") === nodeId
+    );
+    // A freshly restarted remote dashboard reports healthy before its
+    // background session inventory is ready.  Absence during that warm-up is
+    // not authoritative: keep the user's pane placement until the node has
+    // returned one complete inventory.
+    return !state || state.online !== true
+      || state.session_inventory_ready !== true;
+  }
+
   let dashboardInstanceId = "";
   let sessionSnapshotReady = false;
   // Ordered slots: slots[i] = run_id or null. Length fixed by layout.
@@ -3341,15 +3609,17 @@
         });
     }
   }
-  // Sidebar view selector: "active" | "ended" | "projects". Persisted.
-  // - active:   live tmux sessions under outputs/
-  // - ended:    outputs/ entries whose tmux session has exited
-  // - projects: archived logs under projects/<name>/ (by `orch organize`)
-  let sessView = localStorage.getItem("orch_sess_view") || "active";
+  // The sidebar is intentionally a live-session workspace. Archived and
+  // ended-session APIs remain available internally, but no longer consume a
+  // permanent three-tab row in the primary UI.
+  let sessView = "active";
+  localStorage.removeItem("orch_sess_view");
   // Search query (not persisted — fresh on every load so stale queries
   // don't confuse the user into thinking "there are no sessions").
   let searchQuery = "";
   let sidebarPriorityFilter = localStorage.getItem("orch_sidebar_priority_filter") || "all";
+  let sidebarWorkingOnly = localStorage.getItem("orch_sidebar_working_only") === "1";
+  let sidebarUnreadOnly = localStorage.getItem("orch_sidebar_unread_only") === "1";
   let sidebarGroupCollapsed = {};
   try {
     sidebarGroupCollapsed = JSON.parse(localStorage.getItem("orch_sidebar_group_collapsed") || "{}") || {};
@@ -3377,14 +3647,7 @@
     ].join(" \x00 ");
     return matchesQuery(bag, query);
   }
-  // Migrate old key if present.
-  {
-    const old = localStorage.getItem("orch_sess_filter");
-    if (old && !localStorage.getItem("orch_sess_view")) {
-      sessView = old === "all" ? "active" : old;
-      localStorage.setItem("orch_sess_view", sessView);
-    }
-  }
+  localStorage.removeItem("orch_sess_filter");
 
   const paneCtrls = new Map();  // run_id -> { eventSource, cardEl, paneEl, inputEl, ... }
   const paneActivity = new Map();  // run_id -> activity timestamps/state
@@ -4214,9 +4477,10 @@
           "mission-card", mc.state,
           mc.needs_attention ? "attention" : "",
         ].filter(Boolean).join(" ");
+        const activityDot = sessionDotPresentation(s);
         return `<article class="${cardClasses}" data-run-id="${escapeHtml(s.run_id)}">
           <div class="mission-card-head">
-            <span class="dot ${dotClass(s)}${s.busy ? " busy" : ""}"></span>
+            <span class="dot ${activityDot.classes}" title="${activityDot.title}"></span>
             <span class="mission-card-title" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
             ${mc.marker ? `<span class="mission-badge priority">${escapeHtml(mc.marker.toUpperCase())}</span>` : ""}
             <span class="mission-badge ${escapeHtml(mc.state)}">${escapeHtml(missionStateLabel(mc.state))}</span>
@@ -4373,20 +4637,27 @@
         title: "Session is not running.",
       };
     }
+    if (s.agent_exited === true) {
+      return {
+        mode: "exited",
+        text: "exited",
+        title: "The agent process exited; its tmux wrapper remains open so the final output can be inspected.",
+      };
+    }
 
-    const active = tracked.sustainedActive === true || s.activity_sustained_active === true;
+    const activityMode = sessionActivityMode(s);
     const streakStartedAtMs = tracked.streakStartedAtMs
       || parseEpochMs(s.activity_streak_started_at) || 0;
     const lastSustainedAtMs = tracked.lastSustainedAtMs
       || parseEpochMs(s.activity_last_sustained_at) || 0;
     const startedAtMs = parseEpochMs(s.started_at) || 0;
 
-    if (s.background_active === true) {
+    if (activityMode === "background") {
       const reason = s.background_active_reason ? ` (${s.background_active_reason})` : "";
       const bgStartedAtMs = parseEpochMs(s.background_active_started_at) || 0;
       const bgAgeFromServerMs = Number.isFinite(Number(s.background_active_age_s))
         ? Number(s.background_active_age_s) * 1000
-        : 0;
+        : Number(s.native_activity?.age_s || 0) * 1000;
       const bgAgeMs = bgStartedAtMs ? Math.max(0, now - bgStartedAtMs) : bgAgeFromServerMs;
       return {
         mode: "busy",
@@ -4395,8 +4666,10 @@
       };
     }
 
-    if (active) {
-      const since = streakStartedAtMs || lastSustainedAtMs || startedAtMs || now;
+    if (activityMode === "foreground") {
+      const nativeSinceMs = Number(s.native_activity?.since || 0) * 1000;
+      const since = nativeSinceMs || streakStartedAtMs
+        || lastSustainedAtMs || startedAtMs || now;
       return {
         mode: "busy",
         text: `busy ${formatPaneDuration(now - since)}`,
@@ -4440,13 +4713,39 @@
   function updatePaneInstantActivityClass(ctrl, session) {
     if (!ctrl || !ctrl.cardEl) return;
     const s = session || ctrl.session || {};
-    const active = !!s.alive && !!s.busy;
-    const idle = !!s.alive && !s.busy;
-    const idleTone = idle ? paneIdleToneClass(s.panel_state) : "";
-    ctrl.cardEl.classList.toggle("busy", active);
-    ctrl.cardEl.classList.remove("idle-attention");
-    for (const cls of PANE_IDLE_TONE_CLASSES) {
-      ctrl.cardEl.classList.toggle(cls, cls === idleTone);
+    const activity = sessionActivityMode(s);
+    const attention = sessionAttentionState(s);
+    for (const cls of PANE_ACTIVITY_CLASSES) {
+      ctrl.cardEl.classList.toggle(
+        cls,
+        cls === (activity === "foreground" ? "busy" : activity === "background"
+          ? "background-working" : ""),
+      );
+    }
+    for (const cls of PANE_ATTENTION_CLASSES) {
+      ctrl.cardEl.classList.toggle(cls, cls === `attention-${attention}`);
+    }
+    updatePaneUnreadVisual(ctrl, s);
+  }
+
+  const PANE_UNREAD_CLASSES = [
+    "unread-ready", "unread-reminder", "unread-needs-input",
+  ];
+
+  function updatePaneUnreadVisual(ctrl, session) {
+    const head = ctrl?.cardEl?.querySelector(".pane-head");
+    if (!head) return;
+    const s = session || ctrl.session || {};
+    // Header tint is a dismissible notification receipt.  Persistent
+    // operational attention (for example an overdue P0) belongs to the pane
+    // border/dot and must not repaint the header immediately after inspection.
+    const state = sessionVisibleUnreadState(s);
+    for (const cls of PANE_UNREAD_CLASSES) {
+      head.classList.toggle(cls, cls === `unread-${state}`);
+    }
+    const dot = head.querySelector(".pane-drag-region .dot");
+    if (dot) {
+      applySessionDotVisual(dot, s);
     }
   }
 
@@ -4512,8 +4811,8 @@
 
   // ---------- Agent lifecycle notification ----------
   // Codex transcript events and Claude lifecycle hooks are authoritative.
-  // The old terminal-output idle heuristic remains only for agents that do
-  // not expose a native lifecycle signal.
+  // Terminal-output activity remains useful for live spinners and sorting,
+  // but it must never create a user-facing Ready notification.
   //
   // Default notifications are edge-triggered:
   //   - One notification when a working session becomes waiting.
@@ -4526,9 +4825,10 @@
   //     paper-flood with a toast for every long-idle agent.
   //
   const idleNotif = (() => {
-    // IDLE_TRIGGER_MS > server's _BUSY_IDLE_SECONDS (2s) so a single
-    // slow-to-emit token doesn't look like "done".
-    const IDLE_TRIGGER_MS = 3000;
+    // Goal continuation can emit task_complete immediately followed by a
+    // fresh task_started. Keep ordinary completion notifications pending
+    // until the waiting state survives at least one native-activity poll.
+    const NATIVE_WAITING_CONFIRM_MS = 3000;
     const PRIORITY_REMINDER_MS = 10 * 60 * 1000;
     // Keep Chrome/system notifications, but suppress the dashboard's
     // own bottom-right toast popups. This is intentionally a single
@@ -4537,6 +4837,63 @@
 
     // run_id -> lifecycle notification and optional reminder state.
     const tracks = new Map();
+    const UNREAD_STORAGE_KEY = "orch_session_unread_v1";
+    const UNREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    const unreadByIdentity = new Map();
+    try {
+      const saved = JSON.parse(localStorage.getItem(UNREAD_STORAGE_KEY) || "{}");
+      const now = Date.now();
+      for (const [key, value] of Object.entries(saved || {})) {
+        const kind = String(value?.kind || "");
+        const at = Number(value?.at || 0);
+        if (["ready", "reminder", "needs-input"].includes(kind)
+            && at > 0 && now - at <= UNREAD_MAX_AGE_MS) {
+          unreadByIdentity.set(key, { kind, at });
+        }
+      }
+    } catch (_) {}
+
+    function saveUnread() {
+      try {
+        localStorage.setItem(
+          UNREAD_STORAGE_KEY,
+          JSON.stringify(Object.fromEntries(unreadByIdentity)),
+        );
+      } catch (_) {}
+    }
+
+    function unreadKey(s) {
+      return nativeIdentity(s) || String(s?.run_id || "");
+    }
+
+    function unreadStateFor(s) {
+      return unreadByIdentity.get(unreadKey(s))?.kind || "";
+    }
+
+    function refreshUnreadVisuals() {
+      if (typeof renderList === "function") renderList();
+      for (const ctrl of paneCtrls.values()) {
+        updatePaneUnreadVisual(ctrl, ctrl.session);
+      }
+    }
+
+    function markUnread(s, t, kind) {
+      if (!s || !kind) return;
+      const key = unreadKey(s);
+      if (!key) return;
+      unreadByIdentity.set(key, { kind, at: Date.now() });
+      if (t) t.acknowledgedIdle = false;
+      saveUnread();
+      refreshUnreadVisuals();
+    }
+
+    function clearUnread(s, t) {
+      if (!s) return;
+      unreadByIdentity.delete(unreadKey(s));
+      if (t) t.acknowledgedIdle = true;
+      saveUnread();
+      refreshUnreadVisuals();
+    }
 
     // v2 intentionally resets the old output-idle preference: native
     // lifecycle notifications are a different, much less noisy signal.
@@ -4702,7 +5059,29 @@
       const requested = sessions.find(x => x.run_id === runId);
       const canonical = canonicalSession(requested);
       const t = canonical ? tracks.get(canonical.run_id) : null;
-      if (t) t.acknowledgedIdle = true;
+      if (t) {
+        t.notifiedForIdle = true;
+        clearTimeout(t.pendingTimer);
+        t.pendingTimer = null;
+      }
+      if (!canonical) return;
+      clearUnread(canonical, t);
+
+      // Opening or otherwise inspecting a session is equivalent to opening
+      // its notification: dismiss the current browser/system card and any
+      // in-page toast for this waiting episode. The next real working ->
+      // waiting transition can still arm a fresh notification.
+      const toast = toasts.get(canonical.run_id);
+      if (toast) {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+        toasts.delete(canonical.run_id);
+      }
+      const notifKey = nativeIdentity(canonical) || canonical.run_id;
+      const notification = systemNotifs.get(notifKey);
+      if (notification) {
+        systemNotifs.delete(notifKey);
+        try { notification.close(); } catch (_) {}
+      }
     }
 
     // Build a short human-readable hint shown in the toast body.
@@ -4727,7 +5106,8 @@
       const rawAgent = String(s.agent || "").trim().toLowerCase();
       const agent = rawAgent.includes("codex") ? "codex"
         : rawAgent.includes("claude") ? "claude" : rawAgent;
-      return agent ? `${agent}:${resumeId}` : "";
+      const node = String(s.node_id || "local").trim().toLowerCase();
+      return agent ? `${node}:${agent}:${resumeId}` : "";
     }
 
     function canonicalSession(s) {
@@ -4919,6 +5299,7 @@
       }
       if (now - t.lastPriorityReminderAt < PRIORITY_REMINDER_MS) return;
       t.lastPriorityReminderAt = now;
+      markUnread(s, t, "reminder");
       notify(s, { reminder: true });
     }
 
@@ -4935,7 +5316,7 @@
         }
         seen.add(s.run_id);
         const alive = !!s.alive;
-        const busy = !!s.busy && alive;
+        const busy = !!sessionActivityMode(s);
         let t = tracks.get(s.run_id);
         if (!t) {
           // First time we've seen this session. Treat as "just notified"
@@ -4943,10 +5324,17 @@
           // discovered) doesn't immediately fire a toast. It must work and
           // then return to waiting before the first default notification.
           const native = s.native_activity || {};
+          const initialNativeState = String(native.state || "");
+          let persistedUnread = unreadStateFor(s);
+          if (busy && persistedUnread) {
+            unreadByIdentity.delete(unreadKey(s));
+            saveUnread();
+            persistedUnread = "";
+          }
           t = { wasBusy: busy,
                 idleSince: busy ? 0 : now,
                 notifiedForIdle: !busy,
-                acknowledgedIdle: !busy,
+                acknowledgedIdle: !persistedUnread,
                 lastPriorityReminderAt: now,
                 createdAt: now,
                 nativeState: String(native.state || ""),
@@ -4954,6 +5342,22 @@
                   ? `${native.state}:${native.updated_at || 0}` : "",
                 pendingTimer: null };
           tracks.set(s.run_id, t);
+          continue;
+        }
+
+        // Any session that can still make forward progress is active for
+        // attention purposes. Native waiting hooks can lag behind remote
+        // background shells, so active always suppresses stale Ready/reminder
+        // state and starts a fresh waiting transition only after work stops.
+        if (busy) {
+          t.wasBusy = true;
+          t.idleSince = 0;
+          t.notifiedForIdle = false;
+          t.acknowledgedIdle = false;
+          t.lastPriorityReminderAt = 0;
+          clearTimeout(t.pendingTimer);
+          t.pendingTimer = null;
+          if (unreadStateFor(s)) clearUnread(s, t);
           continue;
         }
 
@@ -4971,9 +5375,12 @@
               || nativeState === "needs_input"
               || nativeState === "ended";
             if (t.wasBusy) {
+              clearTimeout(t.pendingTimer);
+              t.pendingTimer = null;
               t.notifiedForIdle = false;
               t.acknowledgedIdle = false;
               t.lastPriorityReminderAt = 0;
+              clearUnread(s, t);
             } else if (waiting && previousState !== nativeState) {
               t.idleSince = now;
               t.notifiedForIdle = false;
@@ -4982,33 +5389,36 @@
             }
             const eventAt = Number(native.updated_at || 0) * 1000;
             const isNewEvent = eventAt >= t.createdAt - 1000;
-            if (enabled && waiting && isNewEvent
-                && previousState !== nativeState) {
+            if (waiting && isNewEvent && previousState !== nativeState) {
               clearTimeout(t.pendingTimer);
               // Coalesce Stop + idle-prompt style event pairs without adding
               // perceptible delay to a real lifecycle transition.
               t.pendingTimer = setTimeout(() => {
                 const fresh = sessions.find(x => x.run_id === s.run_id);
                 const freshState = fresh?.native_activity?.state || "";
-                if (freshState === nativeState && enabled) {
+                if (freshState === nativeState && !sessionActivityMode(fresh)) {
                   t.notifiedForIdle = true;
-                  notify(fresh);
+                  markUnread(
+                    fresh,
+                    t,
+                    nativeState === "needs_input" ? "needs-input" : "ready",
+                  );
+                  if (enabled) notify(fresh);
                 }
-              }, 200);
+                t.pendingTimer = null;
+              }, nativeState === "needs_input" || nativeState === "ended"
+                ? 200 : NATIVE_WAITING_CONFIRM_MS);
+            } else if (waiting && !isNewEvent && !previousState) {
+              // A native lifecycle was attached after screen fallback had
+              // already produced a false Ready. Old transcript state is not
+              // a new user-facing event, so clear that fallback artifact.
+              t.notifiedForIdle = true;
+              clearUnread(s, t);
             }
           }
           const nativeWaiting = nativeState === "waiting_user"
             || nativeState === "needs_input" || nativeState === "ended";
           maybePriorityReminder(s, t, now, nativeWaiting);
-          continue;
-        }
-
-        if (busy) {
-          t.wasBusy = true;
-          t.idleSince = 0;
-          t.notifiedForIdle = false;
-          t.acknowledgedIdle = false;
-          t.lastPriorityReminderAt = 0;
           continue;
         }
 
@@ -5023,13 +5433,12 @@
         }
         t.wasBusy = false;
 
-        if (!alive) continue;          // dead session, not waiting
-        if (enabled && t.idleSince && !t.notifiedForIdle
-            && now - t.idleSince >= IDLE_TRIGGER_MS) {
-          t.notifiedForIdle = true;
-          notify(s);
-        }
-        maybePriorityReminder(s, t, now, true);
+        if (!alive) continue;
+        // Terminal screen hashes remain useful for the green activity
+        // spinner and sorting, but are not lifecycle evidence. Remote ttyd
+        // reconnects and resize/reflow can change the screen after a task is
+        // already finished, so fallback activity must never emit Ready,
+        // unread, or repeated priority notifications.
       }
       // Prune tracks for sessions that no longer exist, so the dict
       // doesn't grow unbounded across a long uptime.
@@ -5041,7 +5450,12 @@
       }
     }
 
-    return { attach, check, toggle, acknowledge,
+    function visualState(runId) {
+      const s = sessions.find(x => x.run_id === runId);
+      return s ? unreadStateFor(s) : "";
+    }
+
+    return { attach, check, toggle, acknowledge, visualState, focusSession,
              get enabled() { return enabled; } };
   })();
 
@@ -5088,7 +5502,9 @@
         }
         const firstSnapshot = !sessionSnapshotReady;
         sessionSnapshotReady = true;
-        sessions = data.sessions || [];
+        sessions = mergePendingPanelStates(data.sessions || []);
+        const remoteNodeStates = Array.isArray(data.remote_nodes)
+          ? data.remote_nodes : [];
         updateMissionControlButton();
         if (!$("mission-modal").hidden) {
           renderMissionControl();
@@ -5119,11 +5535,18 @@
           }
         }
 
-        // Drop slot entries pointing to vanished sessions
+        // Drop slots only when the owning source is authoritative.  Remote
+        // nodes briefly disappear while SSH tunnels reconnect after a local
+        // Dashboard restart; clearing those ids here permanently destroyed
+        // the user's saved pane positions before the node came back.
         const alive = new Set(sessions.map(s => s.run_id));
         let changed = false;
         for (let i = 0; i < slots.length; i++) {
-          if (slots[i] && !alive.has(slots[i])) { slots[i] = null; changed = true; }
+          if (slots[i] && !alive.has(slots[i])
+              && !retainMissingRemoteSlot(slots[i], remoteNodeStates)) {
+            slots[i] = null;
+            changed = true;
+          }
         }
         if (changed) { saveSlots(); renderGrid(); }
         else if (firstSnapshot) renderGrid();
@@ -5173,17 +5596,26 @@
       if (native.state === "working" || native.state === "background_working") {
         s.busy = true;
       } else if (["waiting_user", "needs_input", "ended"].includes(native.state)) {
-        s.busy = false;
-        s.screen_busy = false;
+        // A completed turn may leave a detached shell behind.  Preserve only
+        // sustained output or an explicit agent wait, not the shell count by
+        // itself, as effective activity.
+        s.busy = s.activity_sustained_active === true
+          || sessionTerminalWaitActive(s);
+        if (!s.busy) s.screen_busy = false;
       }
       if (s.mission_control) {
-        s.mission_control.state = native.state === "needs_input"
-          ? "needs_input"
-          : (native.state === "working" || native.state === "background_working")
-            ? "working" : "waiting";
-        s.mission_control.activity_mode = s.busy ? "busy" : "idle";
+        const activity = sessionActivityMode(s);
+        s.mission_control.state = activity
+          ? "working"
+          : native.state === "needs_input" ? "needs_input" : "waiting";
+        s.mission_control.activity_mode = activity ? "busy" : "idle";
         s.mission_control.activity_age_s = native.age_s || 0;
         s.mission_control.activity_source = native.source || "";
+        const persistentAttention = sessionPersistentAttentionState(s);
+        s.mission_control.needs_attention = !!persistentAttention;
+        s.mission_control.attention_reason = persistentAttention === "needs-input"
+          ? "P0 is waiting for your input"
+          : persistentAttention === "reminder" ? "P1 has been idle" : "";
       }
       if (before !== after) {
         changed = true;
@@ -5209,20 +5641,143 @@
 
   function dotClass(s) {
     if (s.kind === "legacy") return "archived";
+    if (s.agent_exited === true) return "dead";
     if (!s.alive) return "dead";
     if (s.status === "running") return "running";
     return "idle";
   }
 
+  function sessionAgentWorking(s) {
+    return !!sessionActivityMode(s);
+  }
+
+  function sessionGoalActive(s) {
+    const goalState = String(
+      s?.mission_control?.progress?.goal_state || ""
+    ).toLowerCase();
+    return goalState === "pursuing" || goalState === "active";
+  }
+
+  function sessionTerminalWaitActive(s) {
+    const reason = String(s?.background_active_reason || "");
+    return /\bwaiting\s+for\b.{1,180}\bto\s+finish\b/i.test(reason);
+  }
+
+  function sessionDetachedShellHint(s) {
+    if (s?.detached_shell_running === true) return true;
+    const legacyReason = String(s?.background_active_reason || "");
+    return /\b(?:\d+\s+)?shells?\s+still\s+running\b/i.test(legacyReason)
+      && !sessionTerminalWaitActive(s);
+  }
+
+  function sessionActivityMode(s) {
+    if (!s || !s.alive || s.agent_exited === true) return "";
+    const nativeState = String(s.native_activity?.state || "").toLowerCase();
+    if (nativeState === "working") return "foreground";
+    if (nativeState === "background_working") return "background";
+    // Claude may be sitting at its prompt while /goal keeps monitors or
+    // delegated agents running.  Treat that as background work rather than an
+    // idle warning; an explicit needs_input lifecycle still wins server-side.
+    if (sessionGoalActive(s) && !["needs_input", "ended"].includes(nativeState)) {
+      return "background";
+    }
+    // Sustained terminal changes remain a useful fallback for sessions that
+    // do not emit native lifecycle events, and for stale remote hook state.
+    if (s.activity_sustained_active === true) return "foreground";
+    // A stale waiting hook can race a real foreground command.  Only an
+    // explicit "Waiting for ... to finish" status may override it.  Merely
+    // leaving a detached shell after a completed turn is not agent activity.
+    if (s.background_active === true && sessionTerminalWaitActive(s)) {
+      return "background";
+    }
+    const nativeWaiting = ["waiting_user", "needs_input", "ended"].includes(nativeState);
+    if (nativeWaiting) return "";
+    if (s.busy === true && s.background_active !== true) return "foreground";
+    return "";
+  }
+
+  function sessionPersistentAttentionState(s) {
+    if (!s || sessionActivityMode(s)) return "";
+    const nativeState = String(s.native_activity?.state || "").toLowerCase();
+    const mission = s.mission_control || {};
+    const missionState = String(mission.state || "").toLowerCase();
+    const priority = String(s.panel_state || mission.priority || "").toLowerCase();
+    if (priority === "blocked" || missionState === "blocked"
+        || nativeState === "needs_input") {
+      return "needs-input";
+    }
+    const waiting = ["waiting_user", "ended"].includes(nativeState)
+      || missionState === "waiting";
+    const waitingAge = Number(
+      s.native_activity?.age_s ?? mission.activity_age_s ?? 0
+    );
+    const priorityOverdue = waiting && (
+      mission.needs_attention === true || waitingAge >= 5 * 60
+    );
+    if (priorityOverdue && priority === "p0") return "needs-input";
+    if (priorityOverdue && priority === "p1") return "reminder";
+    return "";
+  }
+
+  function sessionVisibleUnreadState(s) {
+    if (!s || sessionActivityMode(s)) return "";
+    return idleNotif.visualState(s.run_id);
+  }
+
+  function sessionAttentionState(s) {
+    return sessionPersistentAttentionState(s) || sessionVisibleUnreadState(s);
+  }
+
+  function sessionDotPresentation(s) {
+    const activity = sessionActivityMode(s);
+    if (activity === "foreground") {
+      return { classes: `${dotClass(s)} agent-working`, title: "Agent working" };
+    }
+    if (activity === "background") {
+      return {
+        classes: `${dotClass(s)} background-working`,
+        title: "Background work is still running",
+      };
+    }
+    const attention = sessionAttentionState(s);
+    if (attention) {
+      const title = attention === "reminder" ? "Unread reminder"
+        : attention === "needs-input" ? "Agent needs input" : "Unread result";
+      return { classes: `${dotClass(s)} unread-${attention}`, title };
+    }
+    if (sessionDetachedShellHint(s)) {
+      const reason = String(s?.detached_shell_reason || "").trim();
+      return {
+        classes: dotClass(s),
+        title: reason
+          ? `Agent is waiting; detached shell: ${reason}`
+          : "Agent is waiting; a detached shell is still running",
+      };
+    }
+    return {
+      classes: dotClass(s),
+      title: s?.alive ? "Session ready" : "Session ended",
+    };
+  }
+
+  function applySessionDotVisual(dot, s) {
+    if (!dot) return;
+    const presentation = sessionDotPresentation(s);
+    dot.className = `dot ${presentation.classes}`;
+    dot.title = presentation.title;
+    dot.setAttribute("aria-label", presentation.title);
+  }
+
   function updatePaneHeader(ctrl, fresh) {
     if (!ctrl || !ctrl.cardEl || !fresh) return;
+    const wasRemoteOffline = !!(
+      ctrl.session && ctrl.session.remote && ctrl.session.node_online === false
+    );
     ctrl.session = Object.assign({}, ctrl.session || {}, fresh);
     const s = ctrl.session;
     const card = ctrl.cardEl;
     const dot = card.querySelector(".pane-drag-region .dot");
-    if (dot) {
-      dot.className = "dot " + dotClass(s) + ((s.busy && s.alive) ? " busy" : "");
-    }
+    applySessionDotVisual(dot, s);
     updatePaneInstantActivityClass(ctrl, s);
     const title = card.querySelector(".pane-drag-region .title");
     if (title) {
@@ -5230,16 +5785,29 @@
       title.textContent = display;
       title.title = display;
     }
+    const nodeBadge = card.querySelector(".pane-node-badge");
+    if (nodeBadge) {
+      nodeBadge.textContent = s.node_label || s.node_id || "remote";
+      nodeBadge.classList.toggle("offline", s.node_online === false);
+      nodeBadge.title = s.node_online === false
+        ? (s.node_error || "Remote node offline")
+        : `Running on ${s.node_label || s.node_id}`;
+    }
     const round = card.querySelector(".pane-round");
     if (round) round.textContent = s.max_rounds ? `${s.round || 0}/${s.max_rounds}` : "";
     updatePaneIdleBadge(ctrl);
     const linkedCount = (s.linked_folders || []).length;
     const folders = card.querySelector(".btn-folders");
     if (folders) folders.textContent = linkedCount ? `files ${linkedCount}` : "files";
+    const endSession = card.querySelector(".btn-end-session");
+    if (endSession) {
+      endSession.hidden = !(s.alive && s.agent_exited === true);
+      endSession.disabled = !!(s.remote && s.node_online === false);
+    }
     updatePanelStateSelect(ctrl, s.panel_state || "");
     applyPaneTerminalTheme(ctrl, s);
 
-    const disable = !s.alive;
+    const disable = !s.alive || (s.remote && s.node_online === false);
     [".btn-send", ".btn-progress", ".btn-monitor", ".btn-link-folder"].forEach(sel => {
       const el = card.querySelector(sel);
       if (el) el.disabled = disable;
@@ -5250,12 +5818,15 @@
       updateProjectSyncButton(syncButton, job);
     }
     const stateSelect = card.querySelector(".pane-state-select");
-    if (stateSelect) stateSelect.disabled = !["task", "run"].includes(s.kind);
+    if (stateSelect) stateSelect.disabled = disable || !["task", "run"].includes(s.kind);
     const themeSelect = card.querySelector(".pane-theme-select");
-    if (themeSelect) themeSelect.disabled = !["task", "run"].includes(s.kind);
+    if (themeSelect) themeSelect.disabled = disable || !["task", "run"].includes(s.kind);
+    if (wasRemoteOffline && s.remote && s.node_online !== false) {
+      void attachPaneView(ctrl, { priority: true });
+    }
   }
 
-  // Build the inner HTML for a single live session item (Active / Ended).
+  // Build the inner HTML for a live session item.
   function sessionItemHtml(s) {
     const idx = slotOf(s.run_id);
     const active = idx >= 0 ? "active" : "";
@@ -5267,18 +5838,13 @@
     const stateBadge = stateLabel
       ? `<span class="session-flag-badge state-${escapeHtml(state)}">${escapeHtml(stateLabel)}</span>`
       : "";
-    // Sidebar dot follows an opened pane's card class when available, and
-    // falls back to the server-reported `s.busy` for collapsed/offscreen
-    // sessions.
-    const _ctrl = paneCtrls.get(s.run_id);
-    const _cardBusy = !!(_ctrl && _ctrl.cardEl && _ctrl.cardEl.classList.contains("busy"));
-    const _busy = _cardBusy || !!s.busy;
-    const _dotCls = dotClass(s) + (_busy ? " busy" : "");
+    const _unread = sessionAttentionState(s);
+    const _dot = sessionDotPresentation(s);
     return `
-      <div class="session-item ${active}" data-id="${escapeHtml(s.run_id)}" draggable="true">
+      <div class="session-item ${active} ${_unread ? `unread-${_unread}` : ""}" data-id="${escapeHtml(s.run_id)}" draggable="true">
         ${mark}
         <div class="si-top">
-          <span class="dot ${_dotCls}"></span>
+          <span class="dot ${_dot.classes}" title="${_dot.title}" aria-label="${_dot.title}"></span>
           <span class="si-title" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
           ${stateBadge}
           ${canLabel ? `<button class="btn-rename" title="Rename (label)">✎</button>` : ""}
@@ -5289,24 +5855,23 @@
 
   function renderList() {
     const el = $("session-list");
-    document.querySelectorAll("#sess-filter button[data-view]").forEach(b => {
-      b.classList.toggle("on", b.dataset.view === sessView);
-    });
     syncSidebarAuxControls();
+    const hasRecoverableOfflineNode = REMOTE_NODES.some(
+      node => node?.online === false && node?.reconnect_enabled === true
+    );
 
-    if (sessView === "projects") { renderProjectsView(el); return; }
-
-    if (!sessions.length) {
+    if (!sessions.length && !hasRecoverableOfflineNode) {
       el.innerHTML = '<div style="padding: 24px 14px; color: var(--text-dim); font-size: 12px;">No sessions in outputs/.</div>';
       return;
     }
-    const base = sessions.filter(s => {
-      if (sessView === "active" && !s.alive) return false;
-      if (sessView === "ended"  &&  s.alive) return false;
-      return true;
-    });
+    const base = sessions.filter(s => s.alive);
     renderSidebarPriorityFilter(base);
-    const sorted = base
+    const activityFiltered = sidebarWorkingOnly
+      ? base.filter(sessionAgentWorking) : base;
+    const unreadFiltered = sidebarUnreadOnly
+      ? activityFiltered.filter(s => !!sessionVisibleUnreadState(s))
+      : activityFiltered;
+    const sorted = unreadFiltered
       .map((s, idx) => ({ s, idx }))
       .sort((a, b) => {
         const pa = panelStateSortPriority(a.s.panel_state);
@@ -5318,37 +5883,41 @@
       if (sidebarPriorityFilter === "all") return true;
       return sidebarGroupKey(s.panel_state) === sidebarPriorityFilter;
     });
-    if (!filtered.length) {
+    if (!filtered.length && !hasRecoverableOfflineNode) {
+      const scopes = [];
+      if (sidebarWorkingOnly) scopes.push("actively working");
+      if (sidebarUnreadOnly) scopes.push("unread");
+      const scope = scopes.join(" and ") || "live";
       const why = sidebarPriorityFilter === "all"
-        ? `No ${sessView} sessions.`
-        : `No ${sessView} sessions in ${escapeHtml(sidebarPriorityFilterLabel(sidebarPriorityFilter))}.`;
+        ? `No ${scope} sessions.`
+        : `No ${scope} sessions in ${escapeHtml(sidebarPriorityFilterLabel(sidebarPriorityFilter))}.`;
       el.innerHTML = `<div style="padding: 24px 14px; color: var(--text-dim); font-size: 12px;">${why}</div>`;
       return;
     }
-    const groupsHtml = SIDEBAR_SESSION_GROUPS.map(([key, label]) => {
-      if (sidebarPriorityFilter !== "all" && key !== sidebarPriorityFilter) return "";
-      const items = filtered.filter(s => sidebarGroupKey(s.panel_state) === key);
-      if (!items.length) return "";
-      const collapsed = sidebarPriorityFilter === "all" && sidebarGroupCollapsed[key] === true;
+    const locationGroups = sidebarLocationGroups(filtered);
+    const groupsHtml = locationGroups.map(location => {
+      const locationCollapseKey = `location:${location.key}`;
+      const locationCollapsed = sidebarPriorityFilter === "all"
+        && sidebarGroupCollapsed[locationCollapseKey] === true;
       return `
-        <div class="session-group ${collapsed ? "collapsed" : ""}" data-priority-group="${escapeHtml(key)}">
-          <div class="session-group-head" title="Click to collapse / expand">
-            <span class="caret">${collapsed ? "▸" : "▾"}</span>
-            <span class="name">${escapeHtml(label)}</span>
-            <span class="cnt">${items.length}</span>
+        <div class="session-location-group ${sidebarLocationToneClass(location)} ${location.remote ? "remote" : "local"} ${location.online ? "" : "offline"} ${locationCollapsed ? "collapsed" : ""}" data-location-group="${escapeHtml(location.key)}">
+          <div class="session-location-head" data-sidebar-collapse-key="${escapeHtml(locationCollapseKey)}" title="Click to collapse / expand">
+            <span class="caret">${locationCollapsed ? "▸" : "▾"}</span>
+            <span class="name">${escapeHtml(location.label)}</span>
+            <span class="cnt">${location.items.length}</span>
+            ${location.remote && !location.online && location.reconnectEnabled
+              ? `<button class="node-reconnect-btn" data-node-reconnect="${escapeHtml(location.nodeId)}" data-node-label="${escapeHtml(location.label)}" title="Restore SSH, credentials, and the remote Dashboard">Reconnect</button>`
+              : ""}
           </div>
-          <div class="session-group-body">
-            ${items.map(sessionItemHtml).join("")}
-          </div>
+          <div class="session-location-body">${location.items.map(sessionItemHtml).join("")}</div>
         </div>
       `;
     }).join("");
     el.innerHTML = groupsHtml;
 
-    el.querySelectorAll(".session-group-head").forEach(head => {
+    el.querySelectorAll("[data-sidebar-collapse-key]").forEach(head => {
       head.addEventListener("click", () => {
-        const group = head.closest(".session-group");
-        const key = group && group.dataset.priorityGroup;
+        const key = head.dataset.sidebarCollapseKey;
         if (!key) return;
         sidebarGroupCollapsed[key] = !sidebarGroupCollapsed[key];
         saveSidebarGroupCollapsed();
@@ -5356,13 +5925,40 @@
       });
     });
 
+    el.querySelectorAll("[data-node-reconnect]").forEach(button => {
+      button.addEventListener("click", event => {
+        event.stopPropagation();
+        void openNodeReconnect(
+          button.dataset.nodeReconnect,
+          button.dataset.nodeLabel || button.dataset.nodeReconnect,
+        );
+      });
+    });
+
     el.querySelectorAll(".session-item").forEach(node => {
       const id = node.dataset.id;
+      let clickTimer = null;
       node.addEventListener("click", (ev) => {
         if (ev.target.closest(".btn-rename")) {
           ev.stopPropagation(); renameSession(id); return;
         }
-        handleSessionClick(ev, id);
+        // A normal click rebuilds the sidebar and replaces this DOM node.
+        // Defer it briefly so a second click can become a real dblclick
+        // instead of acting on a newly-rendered replacement row.
+        clearTimeout(clickTimer);
+        const click = {
+          metaKey: ev.metaKey,
+          ctrlKey: ev.ctrlKey,
+          shiftKey: ev.shiftKey,
+        };
+        clickTimer = setTimeout(() => handleSessionClick(click, id), 260);
+      });
+      node.addEventListener("dblclick", (ev) => {
+        if (ev.target.closest(".btn-rename")) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        clearTimeout(clickTimer);
+        idleNotif.focusSession(id);
       });
       node.addEventListener("dragstart", (ev) => {
         ev.dataTransfer.setData("text/orch-session", id);
@@ -5538,14 +6134,6 @@
     return `Status: ${full} (${short}) · click to change`;
   }
 
-  function paneIdleToneClass(state) {
-    const value = String(state || "").toLowerCase();
-    if (value === "p0") return "idle-p0";
-    if (value === "p1") return "idle-p1";
-    if (value === "blocked") return "idle-blocked";
-    return "";
-  }
-
   function panelStateSortPriority(state) {
     const value = String(state || "").toLowerCase();
     if (!value) return PANEL_STATE_SORT_ORDER.length + 1;
@@ -5558,8 +6146,90 @@
     return PANEL_STATE_SORT_ORDER.includes(value) ? value : "unflagged";
   }
 
+  function sidebarLocationInfo(session) {
+    if (!session || !session.remote) {
+      return { key: "local", label: "Local", remote: false, online: true };
+    }
+    const nodeId = String(session.node_id || "remote").trim() || "remote";
+    const configured = REMOTE_NODES.find(node => String(node.id || "") === nodeId);
+    return {
+      key: `remote:${nodeId}`,
+      nodeId,
+      label: String(session.node_label || configured?.label || nodeId),
+      remote: true,
+      online: session.node_online !== false,
+      reconnectEnabled: configured?.reconnect_enabled === true,
+    };
+  }
+
+  function sidebarLocationGroups(items) {
+    const byKey = new Map();
+    for (const session of items) {
+      const info = sidebarLocationInfo(session);
+      let group = byKey.get(info.key);
+      if (!group) {
+        group = Object.assign({}, info, { items: [] });
+        byKey.set(info.key, group);
+      }
+      group.items.push(session);
+      group.online = group.online && info.online;
+    }
+    // Keep recoverable offline nodes visible even before a cached remote
+    // session list is available; the user still needs somewhere to reconnect.
+    for (const node of REMOTE_NODES) {
+      if (node?.online !== false || node?.reconnect_enabled !== true) continue;
+      const nodeId = String(node.id || "").trim();
+      if (!nodeId) continue;
+      const key = `remote:${nodeId}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          key,
+          nodeId,
+          label: String(node.label || nodeId),
+          remote: true,
+          online: false,
+          reconnectEnabled: true,
+          items: [],
+        });
+      }
+    }
+    const configuredOrder = new Map(
+      REMOTE_NODES.map((node, index) => [String(node.id || ""), index + 1])
+    );
+    return [...byKey.values()].sort((a, b) => {
+      const aOrder = a.remote
+        ? (configuredOrder.get(a.nodeId) ?? Number.MAX_SAFE_INTEGER) : 0;
+      const bOrder = b.remote
+        ? (configuredOrder.get(b.nodeId) ?? Number.MAX_SAFE_INTEGER) : 0;
+      return aOrder - bOrder || a.label.localeCompare(b.label);
+    });
+  }
+
+  function sidebarLocationToneClass(location) {
+    if (!location?.remote) return "location-tone-local";
+    const nodeId = String(location.nodeId || "");
+    const configuredIndex = REMOTE_NODES.findIndex(
+      node => String(node.id || "") === nodeId
+    );
+    if (configuredIndex >= 0) {
+      return `location-tone-remote-${configuredIndex % 3 + 1}`;
+    }
+    const stableHash = [...nodeId].reduce(
+      (total, character) => total + character.codePointAt(0), 0
+    );
+    return `location-tone-remote-${stableHash % 3 + 1}`;
+  }
+
   function saveSidebarPriorityFilter() {
     localStorage.setItem("orch_sidebar_priority_filter", sidebarPriorityFilter);
+  }
+
+  function saveSidebarWorkingFilter() {
+    localStorage.setItem("orch_sidebar_working_only", sidebarWorkingOnly ? "1" : "0");
+  }
+
+  function saveSidebarUnreadFilter() {
+    localStorage.setItem("orch_sidebar_unread_only", sidebarUnreadOnly ? "1" : "0");
   }
 
   function saveSidebarGroupCollapsed() {
@@ -5575,10 +6245,9 @@
     const search = $("sess-search");
     const priority = $("sess-priority-filter");
     const status = $("sess-search-status");
-    const projects = sessView === "projects";
-    if (search) search.hidden = !projects;
-    if (priority) priority.hidden = projects;
-    if (status && !projects) {
+    if (search) search.hidden = true;
+    if (priority) priority.hidden = false;
+    if (status) {
       status.hidden = true;
       status.textContent = "";
     }
@@ -5604,6 +6273,20 @@
       btn.textContent = `${label} ${n}`;
       btn.classList.toggle("on", key === sidebarPriorityFilter);
     });
+    const working = bar.querySelector('button[data-activity-filter="working"]');
+    if (working) {
+      const count = baseSessions.filter(sessionAgentWorking).length;
+      working.textContent = `Active ${count}`;
+      working.classList.toggle("on", sidebarWorkingOnly);
+      working.setAttribute("aria-pressed", sidebarWorkingOnly ? "true" : "false");
+    }
+    const unread = bar.querySelector("button[data-unread-filter]");
+    if (unread) {
+      const count = baseSessions.filter(s => !!sessionVisibleUnreadState(s)).length;
+      unread.textContent = `Unread ${count}`;
+      unread.classList.toggle("on", sidebarUnreadOnly);
+      unread.setAttribute("aria-pressed", sidebarUnreadOnly ? "true" : "false");
+    }
   }
 
   function updatePanelStateSelect(ctrl, state) {
@@ -5958,7 +6641,10 @@
       const runId = slots[i];
       if (runId) {
         const ctrl = paneCtrls.get(runId);
-        if (ctrl && ctrl.cardEl && ctrl.cardEl.classList.contains("busy")) {
+        if (ctrl && ctrl.cardEl && (
+          ctrl.cardEl.classList.contains("busy")
+          || ctrl.cardEl.classList.contains("background-working")
+        )) {
           dot.classList.add("busy");
         }
       } else {
@@ -5990,8 +6676,8 @@
     rail.appendChild(focusBtn);
   }
 
-  // Refresh busy highlights on the rail dots AND the sidebar session-item
-  // dots when pane state changes. We observe `.busy` class changes on pane
+  // Refresh active highlights on the rail dots AND the sidebar session-item
+  // dots when pane state changes. We observe activity class changes on pane
   // cards via MutationObserver rather than rewiring every ws busy_state
   // handler, so sidebar / rail / pane card stay in sync even if they were
   // rendered at different times.
@@ -6003,29 +6689,27 @@
         const slotIdx = Number(dot.dataset.slot);
         const runId = slots[slotIdx];
         const ctrl = runId ? paneCtrls.get(runId) : null;
-        const busy = !!(ctrl && ctrl.cardEl && ctrl.cardEl.classList.contains("busy"));
+        const busy = !!(ctrl && ctrl.cardEl && (
+          ctrl.cardEl.classList.contains("busy")
+          || ctrl.cardEl.classList.contains("background-working")
+        ));
         dot.classList.toggle("busy", busy);
         const focused = !!(ctrl && ctrl.cardEl && ctrl.cardEl.classList.contains("focused"));
         dot.classList.toggle("current", focused);
       });
     }
-    // 2) Sidebar session-item dots. Combine the two busy signals exactly
-    // like `sessionItemHtml` does (WS-driven pane-card busy takes priority,
-    // with the polling-driven `s.busy` as fallback) so that clearing the
-    // pane-card class doesn't wrongly turn the sidebar dot off for a
-    // session that's still actively generating per the polling probe.
+    // 2) Sidebar session-item dots use the same mutually exclusive visual
+    // state as pane cards, including foreground/background activity.
     const list = $("session-list");
     if (list) {
       list.querySelectorAll(".session-item").forEach(item => {
         const runId = item.dataset.id;
-        const ctrl = runId ? paneCtrls.get(runId) : null;
-        const cardBusy = !!(ctrl && ctrl.cardEl && ctrl.cardEl.classList.contains("busy"));
         const s = sessions.find(x => x.run_id === runId);
-        const busy = cardBusy || !!(s && s.busy);
         const dot = item.querySelector(".dot");
-        if (dot) dot.classList.toggle("busy", busy);
+        applySessionDotVisual(dot, s);
       });
     }
+    if (sidebarWorkingOnly || sidebarUnreadOnly) renderList();
   });
   // Start observing once the grid exists.
   setTimeout(() => {
@@ -6089,6 +6773,7 @@
       closePaneZoom();
       return;
     }
+    if (card.dataset.runId) idleNotif.acknowledge(card.dataset.runId);
     closePaneZoom();
     paneZoomState = { card, onClose: options.onClose };
     applyPaneZoomLayout();
@@ -6149,8 +6834,9 @@
       <div class="pane-head">
         <div class="pane-drag-region" title="Drag this title area to another pane slot">
           <span class="slot-badge" draggable="true" title="Drag to move to another slot">${SLOT_MARKS[slotIdx] || (slotIdx+1)}</span>
-          <span class="dot ${dotClass(s)}"></span>
+          <span class="dot ${sessionDotPresentation(s).classes}" title="${sessionDotPresentation(s).title}"></span>
           <span class="title" title="${escapeHtml(s.display_name || s.task)}">${escapeHtml(s.display_name || s.task || s.run_name)}</span>
+          ${s.remote ? `<span class="pane-node-badge ${s.node_online === false ? "offline" : ""}" title="${escapeHtml(s.node_online === false ? (s.node_error || "Remote node offline") : `Running on ${s.node_label || s.node_id}`)}">${escapeHtml(s.node_label || s.node_id || "remote")}</span>` : ""}
           <span class="pill pane-round">${s.max_rounds ? `${s.round || 0}/${s.max_rounds}` : ""}</span>
         </div>
         <div class="pane-actions">
@@ -6165,6 +6851,7 @@
           <button class="btn-zoom" title="Open a larger pane view">⛶</button>
           <button class="btn-reload" title="Reconnect this pane (if display is glitchy)">↻</button>
           <button class="btn-folders" title="Linked task files and folders">files</button>
+          <button class="btn-end-session" ${s.agent_exited === true ? "" : "hidden"} title="End this exited session and keep its resume metadata">⏻</button>
           <button class="btn-unpin" title="Close this pane">×</button>
         </div>
       </div>
@@ -6175,7 +6862,7 @@
         <button class="btn-progress" title="发送『现在进度如何？』">进度</button>
         <button class="btn-monitor" title="发送 5 分钟心跳监控指令">监控</button>
         <button class="btn-link-folder" title="Link a folder, file, or URL to this pane">Link</button>
-          <button class="btn-sync-project" title="Sync this session's project and publish a remote resume handoff when idle (Shift-click: sync safe items now)">Sync</button>
+          <button class="btn-sync-project" ${s.remote ? "hidden" : ""} title="Sync this session's project and publish a remote resume handoff when idle (Shift-click: sync safe items now)">Sync</button>
       </div>
     `;
     grid.appendChild(card);
@@ -6219,6 +6906,7 @@
     const btnZoom = card.querySelector(".btn-zoom");
     const btnReload = card.querySelector(".btn-reload");
     const btnFolders = card.querySelector(".btn-folders");
+    const btnEndSession = card.querySelector(".btn-end-session");
     const btnUnpin = card.querySelector(".btn-unpin");
 
     const ctrl = {
@@ -6244,6 +6932,7 @@
     themeSelect.disabled = !["task", "run"].includes(s.kind);
     const linkedCount = (s.linked_folders || []).length;
     btnFolders.textContent = linkedCount ? `files ${linkedCount}` : "files";
+    btnEndSession.disabled = !!(s.remote && s.node_online === false);
 
     // Wire actions
     // "Magic" slash commands for sending raw keystrokes that the browser
@@ -6275,8 +6964,8 @@
       "/clr":   { mode: "keys", value: ["C-e", "C-u"] },
     };
     const sendCurrent = () => {
-      const v = inputEl.value;
-      if (!v) {
+      const visibleText = inputEl.value;
+      if (!visibleText) {
         // Empty input + Enter: forward a bare Enter keystroke to tmux.
         // Matches the iTerm behavior — useful e.g. to flush cursor-agent's
         // follow-up queue ("enter send now") or to dismiss any prompt
@@ -6284,7 +6973,7 @@
         sendKey(runId, "Enter");
         return;
       }
-      const trimmed = v.trim().toLowerCase();
+      const trimmed = visibleText.trim().toLowerCase();
       const cmd = SLASH_COMMANDS[trimmed];
       if (cmd) {
         inputEl.value = ""; autoGrow(inputEl);
@@ -6307,7 +6996,7 @@
         return;
       }
       inputEl.value = ""; autoGrow(inputEl);
-      sendText(runId, v, true);
+      sendText(runId, visibleText, true);
     };
     // Track IME composition so we don't treat "Enter confirms candidate"
     // as "Enter submits message". During composition, keydown fires but
@@ -6360,7 +7049,9 @@
         }
       }
     });
-    inputEl.addEventListener("input", () => autoGrow(inputEl));
+    inputEl.addEventListener("input", () => {
+      autoGrow(inputEl);
+    });
     inputEl.addEventListener("paste", (event) => {
       void handleClipboardImagePaste(event, runId, {
         inputEl,
@@ -6409,6 +7100,7 @@
       }
     });
     btnFolders.addEventListener("click", () => openFolderViewer(runId));
+    btnEndSession.addEventListener("click", () => endExitedSession(runId, btnEndSession));
     btnUnpin.addEventListener("click", () => {
       if (paneZoomState && paneZoomState.card === card) {
         closePaneZoom();
@@ -6720,7 +7412,7 @@
     // Busy pulse comes from /api/sessions polling now (s.busy); clear the
     // lingering class so a stale highlight from the previous attach doesn't
     // bleed through the iframe swap.
-    if (ctrl.cardEl) ctrl.cardEl.classList.remove("busy");
+    if (ctrl.cardEl) ctrl.cardEl.classList.remove("busy", "background-working");
     ctrl.usingTty = false;
   }
 
@@ -6735,6 +7427,11 @@
       }
       if (!frameDocument || ttyShortcutDocuments.has(frameDocument)) return;
       ttyShortcutDocuments.add(frameDocument);
+      // Pointer events inside an iframe do not bubble to the dashboard grid.
+      // Treat direct terminal inspection as reading the waiting notification.
+      frameDocument.addEventListener("pointerdown", () => {
+        idleNotif.acknowledge(runId);
+      }, { capture: true });
       frameDocument.addEventListener("keydown", (event) => {
         const controlSlash = event.ctrlKey && !event.metaKey && !event.altKey
           && (event.key === "/" || event.code === "Slash");
@@ -6745,9 +7442,12 @@
         if (!event.repeat) void sendKey(runId, "C-_");
       }, { capture: true });
       frameDocument.addEventListener("paste", (event) => {
-        // Route images to the real agent composer, not the dashboard's
+        // The iframe cannot access the parent page's paste event by itself.
+        // Route images to the real agent composer, never to the dashboard's
         // auxiliary textarea.
-        void handleClipboardImagePaste(event, runId, { sendToTty: true });
+        void handleClipboardImagePaste(event, runId, {
+          sendToTty: true,
+        });
       }, { capture: true });
     });
   }
@@ -6765,6 +7465,14 @@
     paneEl.classList.remove("pane-tty");
     applyPaneTerminalTheme(ctrl, s);
     paneEl.innerHTML = "";
+
+    if (s.remote && s.node_online === false) {
+      paneEl.textContent = `${s.node_label || s.node_id || "Remote node"} offline` +
+        (s.node_error ? `\n\n${s.node_error}` : "") +
+        "\n\nThe remote tmux session is unchanged. This pane will reconnect when the node returns.";
+      paneEl.classList.add("empty");
+      return;
+    }
 
     // Live sessions render via ttyd (full pty in an iframe). `ttyMode` can
     // be toggled off via the header button to force plain-SSE for all
@@ -6943,6 +7651,9 @@
     const type = String(file.type || "").toLowerCase();
     if (DIRECT_CLIPBOARD_IMAGE_TYPES.has(type)) return file;
 
+    // Browsers expose AVIF, BMP, SVG, and application-specific clipboard
+    // formats inconsistently. If the browser can decode the file, normalize
+    // it to PNG before sending it to either the local or a remote node.
     let bitmap = null;
     let image = null;
     let objectUrl = "";
@@ -7025,16 +7736,20 @@
       const session = ctrl ? currentSessionForPane(ctrl)
         : (sessions.find(item => item.run_id === runId) || {});
 
-      // Local Codex and Claude Code can consume the browser machine's native
-      // clipboard directly. Forward Ctrl+V so their own image attachment UI
-      // remains authoritative.
+      // Codex and Claude Code both bind Ctrl+V to their native image-paste
+      // action. For a local session the agent process shares the browser's
+      // macOS clipboard, so forwarding the key preserves the native
+      // `[Image #N]` attachment instead of inventing dashboard markup.
       if (sendToTty && !session.remote && files.length === 1) {
         await sendKey(runId, "C-v");
         return true;
       }
 
-      // Remote sessions cannot see the browser clipboard. Upload to the
-      // owning node and paste its absolute path into the agent composer.
+      // A remote process cannot read the browser machine's clipboard. Store
+      // the bytes on the node that owns the session and paste its local path
+      // into the real agent composer. Codex turns an image path into a native
+      // attachment; Claude Code accepts image paths as image input. Plain-mode
+      // panes use this same path without any custom `<image ...>` syntax.
       const paths = [];
       for (const file of files) {
         const upload = await uploadClipboardImage(runId, file);
@@ -7084,34 +7799,56 @@
     const value = String(panelState || "").toLowerCase();
     const s = sessions.find(x => x.run_id === runId);
     const prev = s ? String(s.panel_state || "").toLowerCase() : "";
+    const sequence = ++panelStateMutationSequence;
+    pendingPanelStates.set(runId, { value, sequence, confirmed: false });
     if (selectEl) {
+      selectEl.value = value;
       selectEl.dataset.state = value;
       selectEl.title = panelStateControlTitle(value);
       selectEl.disabled = true;
     }
+    applyPanelStateLocally(runId, value);
     try {
       await api(`/api/sessions/${encodeURIComponent(runId)}/panel-state`, {
         method: "POST",
         body: { panel_state: value },
       });
-      if (s) s.panel_state = value;
-      const ctrl = paneCtrls.get(runId);
-      if (ctrl) {
-        ctrl.session = Object.assign({}, ctrl.session || {}, { panel_state: value });
-        updatePanelStateSelect(ctrl, value);
-        updatePaneInstantActivityClass(ctrl, ctrl.session);
+      const pending = pendingPanelStates.get(runId);
+      if (pending && pending.sequence === sequence) {
+        pending.confirmed = true;
+        applyPanelStateLocally(runId, value);
       }
-      renderList();
     } catch (e) {
-      if (selectEl) {
-        selectEl.value = prev;
-        selectEl.dataset.state = prev;
-        selectEl.title = panelStateControlTitle(prev);
+      const pending = pendingPanelStates.get(runId);
+      if (pending && pending.sequence === sequence) {
+        pendingPanelStates.delete(runId);
+        applyPanelStateLocally(runId, prev);
+        if (selectEl) {
+          selectEl.value = prev;
+          selectEl.dataset.state = prev;
+          selectEl.title = panelStateControlTitle(prev);
+        }
+        alert("panel state failed: " + e.message);
       }
-      alert("panel state failed: " + e.message);
     } finally {
-      if (selectEl) selectEl.disabled = !(s && ["task", "run"].includes(s.kind));
+      const pending = pendingPanelStates.get(runId);
+      if (selectEl && (!pending || pending.sequence === sequence)) {
+        const current = sessions.find(x => x.run_id === runId);
+        selectEl.disabled = !(current && ["task", "run"].includes(current.kind));
+      }
     }
+  }
+
+  function applyPanelStateLocally(runId, value) {
+    const current = sessions.find(x => x.run_id === runId);
+    if (current) current.panel_state = value;
+    const ctrl = paneCtrls.get(runId);
+    if (ctrl) {
+      ctrl.session = Object.assign({}, ctrl.session || {}, { panel_state: value });
+      updatePanelStateSelect(ctrl, value);
+      updatePaneInstantActivityClass(ctrl, ctrl.session);
+    }
+    renderList();
   }
 
   async function setTerminalTheme(runId, terminalTheme, selectEl, opts = {}) {
@@ -7262,8 +7999,40 @@
 
   async function forceKillSession(runId) {
     try {
-      await api(`/api/sessions/${encodeURIComponent(runId)}/kill`, { method: "POST" });
+      return await api(`/api/sessions/${encodeURIComponent(runId)}/kill`, { method: "POST" });
     } catch (e) { alert("force kill failed: " + e.message); }
+  }
+
+  async function endExitedSession(runId, button) {
+    const s = sessions.find(x => x.run_id === runId);
+    if (!s || !s.alive || s.agent_exited !== true) return;
+    const name = s.display_name || s.task || s.run_name || "session";
+    if (!confirm(`End the exited session "${name}"?\n\nIts resume metadata and transcript will be kept.`)) return;
+    if (button) button.disabled = true;
+    try {
+      const res = await api(`/api/sessions/${encodeURIComponent(runId)}/stop`, { method: "POST" });
+      let ended = !!res.ok;
+      if (!ended && res.needs_force) {
+        const reason = res.reason ? `\n\nReason: ${res.reason}` : "";
+        if (confirm(`The tmux wrapper did not close.${reason}\n\nForce-close it?`)) {
+          const forced = await forceKillSession(runId);
+          ended = !!forced?.ok;
+        }
+      }
+      if (ended) {
+        const idx = slotOf(runId);
+        if (idx >= 0) clearSlot(idx);
+        closePane(runId);
+        saveSlots();
+        renderList();
+        renderGrid();
+        setTimeout(refreshList, s.remote ? 1200 : 300);
+      }
+    } catch (e) {
+      alert("end session failed: " + e.message);
+    } finally {
+      if (button && button.isConnected) button.disabled = false;
+    }
   }
 
   // ---------- Layout / tty toggles ----------
@@ -7386,26 +8155,24 @@
     if (card?.dataset.runId) idleNotif.acknowledge(card.dataset.runId);
   }, { capture: true });
 
-  // Sidebar view selector buttons (Active / Ended / Projects).
-  document.querySelectorAll("#sess-filter button[data-view]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      sessView = btn.dataset.view;
-      localStorage.setItem("orch_sess_view", sessView);
-      if (sessView === "projects") loadProjects();  // lazy-load on switch
-      // Drop any content-search hits — they're projects-view specific.
-      if (sessView !== "projects") {
-        contentSearchState = { query: "", results: null, pending: false };
-        const st = $("sess-search-status");
-        if (st) { st.hidden = true; st.textContent = ""; }
-      }
-      if (window.__syncSearchVisual) window.__syncSearchVisual();
-      renderList();
-    });
-  });
   document.querySelectorAll("#sess-priority-filter button[data-priority-filter]").forEach(btn => {
     btn.addEventListener("click", () => {
       sidebarPriorityFilter = btn.dataset.priorityFilter || "all";
       saveSidebarPriorityFilter();
+      renderList();
+    });
+  });
+  document.querySelectorAll("#sess-priority-filter button[data-activity-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      sidebarWorkingOnly = !sidebarWorkingOnly;
+      saveSidebarWorkingFilter();
+      renderList();
+    });
+  });
+  document.querySelectorAll("#sess-priority-filter button[data-unread-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      sidebarUnreadOnly = !sidebarUnreadOnly;
+      saveSidebarUnreadFilter();
       renderList();
     });
   });
@@ -8225,9 +8992,6 @@
         + "/clone",
         { method: "POST", body: { mode: "background" } },
       );
-      // Jump back to Active view so the user can see + pin the new session.
-      sessView = "active";
-      localStorage.setItem("orch_sess_view", sessView);
       setTimeout(refreshList, 800);
       setTimeout(refreshList, 2500);
       setTimeout(refreshList, 5000);
@@ -10294,13 +11058,306 @@
     }
   });
 
+  // ---------- Remote-node reconnect modal ----------
+  let reconnectNodeId = "";
+  let reconnectNodeLabel = "";
+  let reconnectPollTimer = null;
+  let reconnectRetryTimer = null;
+  let reconnectChallengeKey = "";
+  let reconnectStatusPhase = "idle";
+  let reconnectResumeOnFocus = false;
+  let reconnectContinueInFlight = false;
+
+  function reconnectStageIndex(step) {
+    return ({
+      health: 0, transport: 0, tunnel: 0,
+      credentials: 1, authenticate: 1, renew: 1,
+      service: 2, verify: 3, complete: 4,
+    })[String(step || "")] ?? 0;
+  }
+
+  function renderNodeReconnectStatus(status) {
+    const phase = String(status?.phase || "idle");
+    reconnectStatusPhase = phase;
+    const stepIndex = reconnectStageIndex(status?.step);
+    const finished = phase === "succeeded";
+    $("reconnect-title").textContent = `Reconnect ${status?.label || reconnectNodeLabel || "remote node"}`;
+    $("reconnect-message").textContent = String(status?.message || "Preparing reconnect…");
+    $("reconnect-message").style.borderColor = phase === "failed"
+      ? "var(--err)" : phase === "succeeded" ? "var(--ok)" : "var(--border)";
+    $("reconnect-steps").querySelectorAll(".reconnect-step").forEach((node, index) => {
+      node.classList.toggle("done", finished || index < stepIndex);
+      node.classList.toggle("current", !finished && index === stepIndex
+        && !["idle", "cancelled"].includes(phase));
+    });
+
+    const url = String(status?.verification_url || "");
+    const code = String(status?.verification_code || "");
+    const challenge = $("reconnect-challenge");
+    challenge.hidden = !url;
+    $("reconnect-link").href = url || "#";
+    $("reconnect-link").textContent = url ? "Open verification page" : "";
+    $("reconnect-code").hidden = !code;
+    $("reconnect-code").textContent = code;
+    $("reconnect-copy").hidden = !code;
+    const challengeKey = url ? `${url}|${code}` : "";
+    if (challengeKey && challengeKey !== reconnectChallengeKey) {
+      reconnectChallengeKey = challengeKey;
+      if (code && navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(code).then(() => {
+          $("reconnect-copy").textContent = "Copied ✓";
+        }).catch(() => {});
+      }
+    }
+
+    const waiting = phase === "waiting_for_user";
+    const running = phase === "running" || waiting;
+    $("reconnect-continue").hidden = !waiting;
+    $("reconnect-continue").textContent = status?.continue_required
+      ? "I've verified · Continue" : "I've completed verification";
+    $("reconnect-cancel").hidden = !running;
+
+    const warnings = Array.isArray(status?.warnings) ? status.warnings : [];
+    $("reconnect-warnings").hidden = warnings.length === 0;
+    $("reconnect-warnings").textContent = warnings.join("\n");
+  }
+
+  function stopNodeReconnectPolling() {
+    if (reconnectPollTimer) clearInterval(reconnectPollTimer);
+    reconnectPollTimer = null;
+  }
+
+  function stopNodeReconnectRetry() {
+    if (reconnectRetryTimer) clearTimeout(reconnectRetryTimer);
+    reconnectRetryTimer = null;
+  }
+
+  function retryableNodeReconnectFailure(status) {
+    if (String(status?.phase || "") !== "failed") return false;
+    return /connection refused|operation timed out|connection timed out|no route to host/i
+      .test(String(status?.message || ""));
+  }
+
+  function scheduleNodeReconnectRetry(status) {
+    if (!reconnectNodeId || reconnectRetryTimer
+        || !retryableNodeReconnectFailure(status)) return false;
+    const retryStatus = {
+      ...status,
+      phase: "running",
+      message: `${status.message}\n\nSSH is unavailable; retrying automatically in 5 seconds…`,
+    };
+    renderNodeReconnectStatus(retryStatus);
+    reconnectRetryTimer = setTimeout(async () => {
+      reconnectRetryTimer = null;
+      if (!reconnectNodeId || $("reconnect-modal").hidden) return;
+      try {
+        const next = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect`, {
+          method: "POST",
+        });
+        renderNodeReconnectStatus(next);
+        if (!reconnectPollTimer) {
+          reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
+        }
+        void pollNodeReconnect();
+      } catch (error) {
+        scheduleNodeReconnectRetry({
+          label: reconnectNodeLabel,
+          phase: "failed",
+          step: "transport",
+          message: `Reconnect retry failed: ${error.message}`,
+        });
+      }
+    }, 5000);
+    return true;
+  }
+
+  async function refreshAfterNodeReconnect() {
+    await Promise.allSettled([refreshNodePicker(), refreshList()]);
+    setTimeout(() => {
+      void refreshNodePicker();
+      void refreshList();
+    }, 3500);
+  }
+
+  async function pollNodeReconnect() {
+    if (!reconnectNodeId) return;
+    try {
+      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect`);
+      renderNodeReconnectStatus(status);
+      if (["succeeded", "failed", "cancelled"].includes(status.phase)) {
+        stopNodeReconnectPolling();
+        if (status.phase === "succeeded") {
+          stopNodeReconnectRetry();
+          void refreshAfterNodeReconnect();
+        } else if (status.phase === "failed" && scheduleNodeReconnectRetry(status)) {
+          return;
+        }
+      }
+    } catch (error) {
+      renderNodeReconnectStatus({
+        label: reconnectNodeLabel,
+        phase: "failed",
+        step: "health",
+        message: `Reconnect status failed: ${error.message}`,
+      });
+      stopNodeReconnectPolling();
+    }
+  }
+
+  async function openNodeReconnect(nodeId, label) {
+    reconnectNodeId = String(nodeId || "");
+    reconnectNodeLabel = String(label || nodeId || "remote node");
+    if (!reconnectNodeId) return;
+    reconnectChallengeKey = "";
+    reconnectResumeOnFocus = false;
+    stopNodeReconnectRetry();
+    $("reconnect-modal").hidden = false;
+    renderNodeReconnectStatus({
+      label: reconnectNodeLabel,
+      phase: "running",
+      step: "health",
+      message: "Starting self-service reconnect…",
+    });
+    stopNodeReconnectPolling();
+    try {
+      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect`, {
+        method: "POST",
+      });
+      renderNodeReconnectStatus(status);
+      reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
+      void pollNodeReconnect();
+    } catch (error) {
+      renderNodeReconnectStatus({
+        label: reconnectNodeLabel,
+        phase: "failed",
+        step: "health",
+        message: error.message,
+      });
+    }
+  }
+
+  function closeNodeReconnectModal() {
+    $("reconnect-modal").hidden = true;
+    stopNodeReconnectPolling();
+    stopNodeReconnectRetry();
+  }
+
+  $("reconnect-close").addEventListener("click", closeNodeReconnectModal);
+  $("reconnect-close-2").addEventListener("click", closeNodeReconnectModal);
+  $("reconnect-modal").addEventListener("click", event => {
+    if (event.target === $("reconnect-modal")) closeNodeReconnectModal();
+  });
+  $("reconnect-copy").addEventListener("click", async () => {
+    const code = $("reconnect-code").textContent || "";
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      $("reconnect-copy").textContent = "Copied";
+      setTimeout(() => { $("reconnect-copy").textContent = "Copy code"; }, 1200);
+    } catch (_) {
+      window.prompt("Copy verification code:", code);
+    }
+  });
+  $("reconnect-link").addEventListener("click", () => {
+    // The verification page opens in a new tab.  When the user returns to
+    // the Dashboard, submit Enter automatically; the explicit Continue
+    // button remains as a fallback for browsers that do not emit focus.
+    reconnectResumeOnFocus = true;
+  });
+
+  async function continueNodeReconnect() {
+    if (!reconnectNodeId || reconnectContinueInFlight
+        || reconnectStatusPhase !== "waiting_for_user") return;
+    reconnectContinueInFlight = true;
+    reconnectResumeOnFocus = false;
+    try {
+      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect/continue`, {
+        method: "POST",
+      });
+      renderNodeReconnectStatus(status);
+      if (!reconnectPollTimer) reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
+    } catch (error) {
+      alert("Continue reconnect failed:\n" + error.message);
+    } finally {
+      reconnectContinueInFlight = false;
+    }
+  }
+
+  $("reconnect-continue").addEventListener("click", () => {
+    void continueNodeReconnect();
+  });
+  window.addEventListener("focus", () => {
+    if (!reconnectResumeOnFocus) return;
+    setTimeout(() => void continueNodeReconnect(), 250);
+  });
+  $("reconnect-cancel").addEventListener("click", async () => {
+    if (!reconnectNodeId) return;
+    try {
+      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect/cancel`, {
+        method: "POST",
+      });
+      renderNodeReconnectStatus(status);
+      if (!reconnectPollTimer) reconnectPollTimer = setInterval(pollNodeReconnect, 500);
+    } catch (error) {
+      alert("Cancel reconnect failed:\n" + error.message);
+    }
+  });
+
   // ---------- New-session modal ----------
   const modal = $("new-modal");
   let resumableSessions = [];
   let resumeLoadSeq = 0;
   let resumeSearchTimer = null;
+
+  function selectedNodeId() {
+    return $("new-node")?.value || "local";
+  }
+
+  function selectedRemoteNode() {
+    const nodeId = selectedNodeId();
+    return REMOTE_NODES.find(node => node.id === nodeId) || null;
+  }
+
+  function renderNodePicker() {
+    const field = $("new-node-field");
+    const select = $("new-node");
+    if (!field || !select) return;
+    const previous = select.value || "local";
+    select.innerHTML = [
+      `<option value="local">Local</option>`,
+      ...REMOTE_NODES.map(node => {
+        const status = node.online === false ? " · offline" : "";
+        return `<option value="${escapeHtml(node.id)}">${escapeHtml(node.label || node.id)}${status}</option>`;
+      }),
+    ].join("");
+    field.hidden = REMOTE_NODES.length === 0;
+    select.value = ["local", ...REMOTE_NODES.map(node => node.id)].includes(previous)
+      ? previous : "local";
+  }
+
+  async function refreshNodePicker() {
+    if (!REMOTE_NODES.length) return;
+    try {
+      const result = await api("/api/nodes");
+      const rows = Array.isArray(result.nodes) ? result.nodes : [];
+      const remote = rows.filter(node => node.id && node.id !== "local");
+      if (remote.length) REMOTE_NODES = remote;
+      renderNodePicker();
+      updateNewSessionTarget(false);
+    } catch (_) {}
+  }
+
+  function updateNewSessionTarget(resetCwd = true) {
+    const node = selectedRemoteNode();
+    if (resetCwd) {
+      $("new-cwd").value = node?.projects_root || PROJECTS_ROOT || "~";
+    }
+    updateNewSessionMode();
+  }
+
   const openModal = () => {
     modal.hidden = false;
+    void refreshNodePicker();
     updateNewSessionMode();
     setTimeout(() => $("new-label").focus(), 50);
   };
@@ -10438,7 +11495,10 @@
     sel.innerHTML = `<option value="">${q ? "Searching…" : "Loading…"}</option>`;
     setResumeStatus(q ? `Searching "${q}"...` : "Loading resumable sessions...");
     try {
-      const params = new URLSearchParams({ limit: "300" });
+      const params = new URLSearchParams({
+        limit: "300",
+        node_id: selectedNodeId(),
+      });
       if (q) params.set("q", q);
       const res = await api(`/api/resumable?${params.toString()}`);
       if (seq !== resumeLoadSeq || q !== resumeSearchQuery()) return;
@@ -10455,12 +11515,16 @@
   function updateNewSessionMode() {
     const kind = $("new-kind").value;
     const isResume = kind === "resume";
+    const remoteNode = selectedRemoteNode();
     $("new-resume-field").hidden = !isResume;
     $("new-agent-field").hidden = isResume;
     $("new-model-field").hidden = isResume;
     $("new-effort-field").hidden = isResume || $("new-agent").value !== "claude";
+    $("new-submit").hidden = !!remoteNode;
     $("new-submit").textContent = isResume ? "Open iTerm & Resume" : "Open iTerm & Start";
-    $("new-submit-bg").textContent = isResume ? "Resume in background" : "Start in background";
+    $("new-submit-bg").textContent = remoteNode
+      ? `${isResume ? "Resume" : "Start"} on ${remoteNode.label || remoteNode.id}`
+      : (isResume ? "Resume in background" : "Start in background");
     if (isResume) loadResumableSessions();
   }
 
@@ -10473,6 +11537,10 @@
     resumeSearchTimer = setTimeout(() => loadResumableSessions(q), q ? 250 : 150);
   });
   $("new-resume-from").addEventListener("change", updateSelectedResumeFromSelect);
+  $("new-node").addEventListener("change", () => {
+    resumableSessions = [];
+    updateNewSessionTarget(true);
+  });
 
   async function createSession(mode) {
     // mode: "iterm" (open iTerm window) | "background" (tmux only, no UI app)
@@ -10486,6 +11554,7 @@
     try {
       const body = isResume
         ? {
+            node_id: selectedNodeId(),
             run_id: $("new-resume-from").value,
             label: $("new-label").value.trim(),
             cwd:   $("new-cwd").value.trim(),
@@ -10493,6 +11562,7 @@
             terminal_theme: currentGlobalTerminalTheme(),
           }
         : {
+            node_id: selectedNodeId(),
             agent: $("new-agent").value,
             model: $("new-model").value.trim(),
             effort: $("new-effort").value.trim(),
@@ -10507,7 +11577,7 @@
       $("new-label").value = "";
       $("new-model").value = "";
       $("new-effort").value = "";
-      $("new-cwd").value = PROJECTS_ROOT || "~";
+      $("new-cwd").value = selectedRemoteNode()?.projects_root || PROJECTS_ROOT || "~";
       $("new-kind").value = "new";
       updateNewSessionMode();
       setTimeout(refreshList, 1200);
@@ -10599,9 +11669,8 @@
   })();
 
   // ---------- Sidebar search wiring ----------
-  // Typing filters the currently visible list by name/task/cwd on the
-  // client (cheap, instant). Pressing Enter while in Projects view kicks
-  // off a full-text backend search across archived .log files.
+  // The archived-project search implementation remains for compatibility,
+  // although its primary sidebar entry point is intentionally hidden.
   (function initSidebarSearch() {
     const input = $("sess-search-input");
     const clearBtn = $("sess-search-clear");
@@ -10810,8 +11879,6 @@
       slots[0] = sessions[0].run_id;
       saveSlots();
     }
-    // If the user last left the sidebar on Projects view, pre-fetch it.
-    if (sessView === "projects") loadProjects();
     renderList();
     renderGrid();
     setInterval(refreshList, 5000);

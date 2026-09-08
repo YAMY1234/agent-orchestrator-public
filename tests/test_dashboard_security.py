@@ -180,44 +180,382 @@ class MetadataConcurrencyTests(unittest.TestCase):
             }])
 
 
-class ClipboardImageContractTests(unittest.TestCase):
+class NativeResumeCaptureTests(unittest.TestCase):
+    def test_codex_resume_matches_symlinked_working_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            real_cwd = root / "lustre" / "project"
+            alias_cwd = home / "Projects"
+            transcript_dir = home / ".codex" / "sessions" / "2026" / "08" / "31"
+            real_cwd.mkdir(parents=True)
+            alias_cwd.parent.mkdir(parents=True)
+            alias_cwd.symlink_to(real_cwd, target_is_directory=True)
+            transcript_dir.mkdir(parents=True)
+            transcript = transcript_dir / (
+                "rollout-2026-08-31T21-09-18-"
+                "01a05b28-3d80-7582-9614-f6c86990d736.jsonl"
+            )
+            transcript.write_text(json.dumps({
+                "type": "session_meta",
+                "payload": {
+                    "id": "01a05b28-3d80-7582-9614-f6c86990d736",
+                    "timestamp": "2026-09-01T04:09:18Z",
+                    "cwd": str(real_cwd),
+                },
+            }) + "\n")
+
+            with patch.object(dashboard.Path, "home", return_value=home):
+                meta, candidates = dashboard._find_codex_resume_near_start(
+                    str(alias_cwd), "2026-09-01T04:08:21Z",
+                )
+
+            self.assertEqual(
+                meta["resume_id"],
+                "01a05b28-3d80-7582-9614-f6c86990d736",
+            )
+            self.assertEqual(len(candidates), 1)
+
+
+class DashboardNotificationContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (dashboard.STATIC_DIR / "index.html").read_text()
 
-    def test_image_paste_uses_native_agent_input(self):
+    def test_same_native_session_reuses_one_system_notification_tag(self):
+        self.assertIn('const notifKey = nativeIdentity(s) || s.run_id;', self.source)
+        self.assertIn('tag: "orch-idle-" + notifKey,', self.source)
+        self.assertIn('systemNotifs.set(notifKey, n);', self.source)
+
+    def test_manual_session_inspection_acknowledges_notification(self):
+        self.assertIn(
+            'if (card.dataset.runId) idleNotif.acknowledge(card.dataset.runId);',
+            self.source,
+        )
+        self.assertIn(
+            'idleNotif.acknowledge(runId);\n      }, { capture: true });',
+            self.source,
+        )
+        self.assertIn('try { notification.close(); } catch (_) {}', self.source)
+
+    def test_screen_activity_fallback_cannot_notify(self):
+        marker = "// Terminal screen hashes remain useful for the green activity"
+        start = self.source.index(marker)
+        end = self.source.index("// Prune tracks", start)
+        fallback_block = self.source[start:end]
+        self.assertNotIn("notify(", fallback_block)
+        self.assertNotIn("markUnread(", fallback_block)
+
+    def test_image_paste_is_wired_for_input_and_tty_iframe(self):
+        self.assertIn(
+            'sendToTty: ctrl.usingTty,',
+            self.source,
+        )
+        self.assertIn(
+            "bridgeTtyControlSlash(ifr, runId);",
+            self.source,
+        )
+        self.assertIn('/paste-image`, {', self.source)
         self.assertIn("normalizeClipboardImageForUpload(file)", self.source)
+        self.assertIn('"image/tiff", "image/x-tiff"', self.source)
+
+    def test_iframe_files_remain_binary_across_javascript_realms(self):
+        self.assertIn("function isRawRequestBody(body)", self.source)
         self.assertIn('tag === "[object File]"', self.source)
-        self.assertIn('if (sendToTty && !session.remote && files.length === 1)', self.source)
+        api_start = self.source.index("async function api(")
+        api_end = self.source.index("function authQS()", api_start)
+        self.assertIn(
+            "const rawBody = isRawRequestBody(opts.body);",
+            self.source[api_start:api_end],
+        )
+
+    def test_tty_image_paste_uses_native_agent_input(self):
+        self.assertIn(
+            'if (sendToTty && !session.remote && files.length === 1)',
+            self.source,
+        )
         self.assertIn('await sendKey(runId, "C-v");', self.source)
         self.assertIn('await sendText(runId, text, false);', self.source)
         self.assertNotIn('<image name=[Pasted Image]', self.source)
 
 
-class ClipboardImageUploadTests(unittest.TestCase):
-    def _app_and_run(self, root: Path):
-        outputs = root / "outputs"
-        run_dir = outputs / "demo-run"
-        run_dir.mkdir(parents=True)
-        (run_dir / "session.json").write_text(json.dumps({
-            "name": "demo",
-            "cwd": str(root),
-            "status": "running",
-        }))
-        return dashboard.create_app(outputs, ttyd_enabled=False), run_dir
+class DashboardExitedSessionContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (dashboard.STATIC_DIR / "index.html").read_text()
 
+    def test_exited_agent_gets_a_contextual_end_control(self):
+        self.assertIn('class="btn-end-session"', self.source)
+        self.assertIn("endExitedSession(runId, btnEndSession)", self.source)
+        self.assertIn('text: "exited"', self.source)
+
+    def test_close_pane_remains_separate_from_ending_session(self):
+        self.assertIn('class="btn-unpin" title="Close this pane">×</button>', self.source)
+        end_start = self.source.index("async function endExitedSession(")
+        end_block = self.source[end_start:self.source.index(
+            "// ---------- Layout / tty toggles ----------", end_start
+        )]
+        self.assertIn("/stop`, { method: \"POST\" }", end_block)
+        self.assertIn("closePane(runId);", end_block)
+
+
+class DashboardAgentExitDetectionTests(unittest.TestCase):
+    def setUp(self):
+        dashboard._SESSION_BUSY_HASH.clear()
+        dashboard._SESSION_LAST_CHANGE.clear()
+        dashboard._SESSION_ACTIVITY_STREAK_START.clear()
+        dashboard._SESSION_LAST_SUSTAINED_ACTIVE.clear()
+        dashboard._SESSION_BACKGROUND_ACTIVE_START.clear()
+
+    def test_recent_launcher_exit_marker_marks_agent_exited(self):
+        with patch.object(
+            dashboard,
+            "tmux_capture_activity",
+            return_value=(
+                "bash: Bus error (core dumped)\n--- Agent exited ---\n"
+                + "\n" * 40
+            ),
+        ):
+            activity = dashboard._probe_session_activity("orch-crashed")
+
+        self.assertTrue(activity["agent_exited"])
+        self.assertFalse(activity["busy"])
+
+    def test_marker_mentioned_in_prose_does_not_mark_agent_exited(self):
+        with patch.object(
+            dashboard,
+            "tmux_capture_activity",
+            return_value="The marker is --- Agent exited --- when the wrapper ends.\n",
+        ):
+            activity = dashboard._probe_session_activity("orch-working")
+
+        self.assertFalse(activity["agent_exited"])
+
+    def test_completed_turn_with_detached_shell_is_not_agent_activity(self):
+        status = "* Cogitated for 38s · done 12:22 AM · 1 shell still running"
+        active, reason = dashboard._detect_background_active(status)
+        detached, detached_reason = dashboard._detect_detached_shell(status)
+
+        self.assertFalse(active)
+        self.assertEqual(reason, "")
+        self.assertTrue(detached)
+        self.assertIn("1 shell still running", detached_reason)
+
+    def test_agent_waiting_for_shell_to_finish_is_background_activity(self):
+        active, reason = dashboard._detect_background_active(
+            "* Waiting for the verification command to finish"
+        )
+
+        self.assertTrue(active)
+        self.assertIn("Waiting for", reason)
+
+
+class DashboardPanelStateContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (dashboard.STATIC_DIR / "index.html").read_text()
+
+    def test_stale_session_poll_cannot_overwrite_pending_panel_state(self):
+        self.assertIn("const pendingPanelStates = new Map();", self.source)
+        self.assertIn(
+            "sessions = mergePendingPanelStates(data.sessions || []);",
+            self.source,
+        )
+        self.assertIn(
+            "pending.confirmed && serverValue === pending.value",
+            self.source,
+        )
+
+    def test_panel_state_is_applied_before_persistence_finishes(self):
+        start = self.source.index("async function setPanelState(")
+        end = self.source.index("async function setTerminalTheme(", start)
+        mutation = self.source[start:end]
+        self.assertLess(
+            mutation.index("applyPanelStateLocally(runId, value);"),
+            mutation.index("await api("),
+        )
+        self.assertIn("pending.sequence === sequence", mutation)
+
+    def test_persisted_panel_state_requests_a_fresh_session_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outputs = root / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            session_file = run_dir / "session.json"
+            session_file.write_text(json.dumps({
+                "name": "demo",
+                "cwd": str(root),
+                "status": "running",
+            }))
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+
+            with TestClient(app) as client, patch.object(
+                app.state.session_snapshots, "request_refresh"
+            ) as request_refresh:
+                response = client.post(
+                    "/api/sessions/demo-run::demo/panel-state",
+                    json={"panel_state": "p0"},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                json.loads(session_file.read_text())["panel_state"], "p0",
+            )
+            request_refresh.assert_called_once_with()
+
+
+class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (dashboard.STATIC_DIR / "index.html").read_text()
+
+    def test_sidebar_groups_by_location_and_keeps_priority_on_each_item(self):
+        render_start = self.source.index("function renderList()")
+        render_end = self.source.index("function sidebarGroupKey(", render_start)
+        render = self.source[render_start:render_end]
+        self.assertIn("sidebarLocationGroups(filtered)", render)
+        self.assertIn('class="session-location-group', render)
+        self.assertIn("location.items.map(sessionItemHtml)", render)
+        self.assertNotIn('class="session-group', render)
+        self.assertNotIn("priorityCollapseKey", render)
+        self.assertNotIn('class="session-node-badge', self.source)
+
+    def test_location_identity_uses_remote_node_metadata(self):
+        self.assertIn("function sidebarLocationInfo(session)", self.source)
+        self.assertIn('key: "local", label: "Local"', self.source)
+        self.assertIn("session.node_label || configured?.label || nodeId", self.source)
+        self.assertIn("REMOTE_NODES.map((node, index)", self.source)
+
+    def test_offline_remote_sessions_keep_their_saved_pane_slots(self):
+        self.assertIn("function remoteNodeIdFromRunId(runId)", self.source)
+        self.assertIn("function retainMissingRemoteSlot(runId, nodeStates)", self.source)
+        self.assertIn("!retainMissingRemoteSlot(slots[i], remoteNodeStates)", self.source)
+
+    def test_location_groups_have_distinct_visual_tones(self):
+        self.assertIn("function sidebarLocationToneClass(location)", self.source)
+        self.assertIn("location-tone-local", self.source)
+        self.assertIn("location-tone-remote-1", self.source)
+        self.assertIn("location-tone-remote-2", self.source)
+        self.assertIn(
+            ".session-location-group + .session-location-group",
+            self.source,
+        )
+
+    def test_double_clicking_sidebar_session_opens_zoomed_tty(self):
+        render_start = self.source.index("function renderList()")
+        render_end = self.source.index("async function deleteEndedSession", render_start)
+        render = self.source[render_start:render_end]
+        self.assertIn('node.addEventListener("dblclick", (ev) => {', render)
+        self.assertIn("clearTimeout(clickTimer);", render)
+        self.assertIn("idleNotif.focusSession(id);", render)
+        self.assertIn("visualState, focusSession,", self.source)
+
+    def test_offline_remote_group_offers_self_service_reconnect(self):
+        self.assertIn('id="reconnect-modal"', self.source)
+        self.assertIn('data-node-reconnect=', self.source)
+        self.assertIn("async function openNodeReconnect(nodeId, label)", self.source)
+        self.assertIn("/reconnect/continue", self.source)
+        self.assertIn("/reconnect/cancel", self.source)
+
+    def test_active_sessions_suppress_attention_visuals(self):
+        self.assertIn("function sessionActivityMode(s)", self.source)
+        attention_start = self.source.index(
+            "function sessionPersistentAttentionState(s)"
+        )
+        attention_end = self.source.index(
+            "function sessionVisibleUnreadState(s)", attention_start,
+        )
+        attention = self.source[attention_start:attention_end]
+        self.assertIn('if (!s || sessionActivityMode(s)) return "";', attention)
+        self.assertIn('return "background";', self.source)
+        self.assertIn(".dot.background-working", self.source)
+        self.assertIn(".pane-card.background-working", self.source)
+
+    def test_unread_header_does_not_use_persistent_attention(self):
+        start = self.source.index("function updatePaneUnreadVisual(ctrl, session)")
+        end = self.source.index("function activePanelCandidates()", start)
+        update = self.source[start:end]
+        self.assertIn("const state = sessionVisibleUnreadState(s);", update)
+        self.assertNotIn("const state = sessionAttentionState(s);", update)
+
+    def test_goal_active_is_background_work(self):
+        start = self.source.index("function sessionGoalActive(s)")
+        end = self.source.index("function sessionPersistentAttentionState(s)", start)
+        activity = self.source[start:end]
+        self.assertIn('goalState === "pursuing"', activity)
+        self.assertIn("if (sessionGoalActive(s)", activity)
+        self.assertIn('return "background";', activity)
+
+    def test_waiting_native_state_ignores_a_detached_shell(self):
+        start = self.source.index("function sessionTerminalWaitActive(s)")
+        end = self.source.index("function sessionPersistentAttentionState(s)", start)
+        activity = self.source[start:end]
+        self.assertIn("function sessionDetachedShellHint(s)", activity)
+        self.assertIn('if (nativeWaiting) return "";', activity)
+        self.assertIn("sessionTerminalWaitActive(s)", activity)
+
+    def test_remote_reconnect_retries_transient_ssh_outages(self):
+        self.assertIn("function retryableNodeReconnectFailure(status)", self.source)
+        self.assertIn("function scheduleNodeReconnectRetry(status)", self.source)
+        self.assertIn("retrying automatically in 5 seconds", self.source)
+        self.assertIn("}, 5000);", self.source)
+
+    def test_overdue_p0_and_p1_waiting_states_keep_attention_borders(self):
+        start = self.source.index("function sessionPersistentAttentionState(s)")
+        end = self.source.index("function sessionVisibleUnreadState(s)", start)
+        attention = self.source[start:end]
+        self.assertIn("waitingAge >= 5 * 60", attention)
+        self.assertIn('priority === "p0"', attention)
+        self.assertIn('return "needs-input"', attention)
+        self.assertIn('priority === "p1"', attention)
+        self.assertIn('return "reminder"', attention)
+        self.assertIn("function sessionVisibleUnreadState(s)", self.source)
+
+    def test_priority_badges_no_longer_own_pane_border(self):
+        self.assertNotIn(".pane-card.idle-p0", self.source)
+        self.assertNotIn(".pane-card.idle-p1", self.source)
+        self.assertIn(".pane-card.attention-ready", self.source)
+        self.assertIn(".pane-card.attention-reminder", self.source)
+        self.assertIn(".pane-card.attention-needs-input", self.source)
+
+    def test_notifications_use_effective_activity_not_raw_busy_only(self):
+        check_start = self.source.index("function check(list)")
+        check_end = self.source.index("function visualState(runId)", check_start)
+        check = self.source[check_start:check_end]
+        self.assertIn("const busy = !!sessionActivityMode(s);", check)
+        self.assertIn("!sessionActivityMode(fresh)", check)
+
+
+class ClipboardImageUploadTests(unittest.TestCase):
     def test_upload_stores_a_private_png_beside_the_session(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            app, run_dir = self._app_and_run(Path(temp_dir))
+            root = Path(temp_dir)
+            outputs = root / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "session.json").write_text(json.dumps({
+                "name": "demo",
+                "cwd": str(root),
+                "status": "running",
+            }))
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
             image = b"\x89PNG\r\n\x1a\nlocal-image"
+
             with TestClient(app) as client:
                 response = client.post(
                     "/api/sessions/demo-run::demo/paste-image",
                     content=image,
                     headers={"Content-Type": "image/png"},
                 )
+
             self.assertEqual(response.status_code, 200)
-            target = Path(response.json()["path"])
+            payload = response.json()
+            target = Path(payload["path"])
             self.assertEqual(target.parent, (run_dir / "pasted-images").resolve())
             self.assertEqual(target.read_bytes(), image)
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
@@ -226,29 +564,52 @@ class ClipboardImageUploadTests(unittest.TestCase):
         from PIL import Image
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            app, _ = self._app_and_run(Path(temp_dir))
+            root = Path(temp_dir)
+            outputs = root / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "session.json").write_text(json.dumps({
+                "name": "demo",
+                "cwd": str(root),
+                "status": "running",
+            }))
             source = io.BytesIO()
             Image.new("RGB", (3, 2), (20, 80, 160)).save(source, format="TIFF")
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+
             with TestClient(app) as client:
                 response = client.post(
                     "/api/sessions/demo-run::demo/paste-image",
                     content=source.getvalue(),
                     headers={"Content-Type": "image/tiff"},
                 )
+
             self.assertEqual(response.status_code, 200)
-            target = Path(response.json()["path"])
+            payload = response.json()
+            target = Path(payload["path"])
             self.assertEqual(target.suffix, ".png")
+            self.assertEqual(payload["content_type"], "image/png")
             self.assertTrue(target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_upload_rejects_non_image_content(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            app, _ = self._app_and_run(Path(temp_dir))
+            outputs = Path(temp_dir) / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "session.json").write_text(json.dumps({"name": "demo"}))
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+
             with TestClient(app) as client:
                 response = client.post(
                     "/api/sessions/demo-run::demo/paste-image",
                     content=b"not an image",
                     headers={"Content-Type": "text/plain"},
                 )
+
             self.assertEqual(response.status_code, 415)
 
 
@@ -278,12 +639,31 @@ class TerminalThemeTests(unittest.TestCase):
             b"unchanged",
         )
 
-    def test_ttyd_interaction_patch_adds_links_and_selection_once(self):
+    def test_ttyd_output_theme_mapper_rewrites_true_black_across_frames(self):
+        mapper = terminal_theme.TtydOutputThemeMapper("soft-dark")
+        first = mapper.transform(b"0before\x1b[48;2;0;")
+        second = mapper.transform(b"00;0mafter")
+
+        self.assertEqual(first, [b"0before"])
+        self.assertEqual(second, [b"0\x1b[48;2;31;36;44mafter"])
+        self.assertIsNone(mapper.finish())
+
+    def test_ttyd_output_theme_mapper_preserves_other_protocol_messages(self):
+        mapper = terminal_theme.TtydOutputThemeMapper("soft-dark")
+        self.assertEqual(mapper.transform(b"2preferences"), [b"2preferences"])
+        self.assertEqual(
+            mapper.transform(b"0\x1b[48;2;33;58;43mcontent"),
+            [b"0\x1b[48;2;33;58;43mcontent"],
+        )
+
+    def test_ttyd_interaction_patch_is_idempotent(self):
         original = b"<html><body>terminal</body></html>"
         patched = terminal_theme.patch_ttyd_index_interactions(original)
         self.assertIn(b"orch-ttyd-interactions-v1", patched)
         self.assertIn(b"originalTriggerMouseEvent", patched)
         self.assertIn(b"_oscLinkService", patched)
+        self.assertIn(b"getLinkData", patched)
+        self.assertIn(b"extended.urlId", patched)
         self.assertIn(b"window.open(pendingUrl", patched)
         self.assertEqual(
             terminal_theme.patch_ttyd_index_interactions(patched),
@@ -332,6 +712,109 @@ class TtydRecoveryTests(unittest.TestCase):
 
         self.assertTrue(enabled)
         run.assert_called_once()
+
+    def test_persisted_theme_index_reads_active_run_and_task_sessions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir)
+            run_dir = outputs / "run-one"
+            task_dir = outputs / "run-two"
+            run_dir.mkdir()
+            task_dir.mkdir()
+            (run_dir / "session.json").write_text(json.dumps({
+                "tmux_session": "orch-run-one",
+                "terminal_theme": "Soft Dark",
+            }))
+            (task_dir / "state.json").write_text(json.dumps({
+                "task": {
+                    "tmux_session": "orch-task-two",
+                    "terminal_theme": "soft-green",
+                },
+            }))
+            (outputs / ".active_sessions_snapshot.json").write_text(json.dumps({
+                "sessions": [
+                    {
+                        "kind": "run",
+                        "run_name": "run-one",
+                        "tmux_session": "orch-run-one",
+                        "terminal_theme": "light",
+                    },
+                    {
+                        "kind": "task",
+                        "run_name": "run-two",
+                        "task": "task",
+                        "tmux_session": "orch-task-two",
+                        "terminal_theme": "light",
+                    },
+                ],
+            }))
+
+            themes = dashboard._terminal_themes_by_tmux_session(outputs)
+
+        self.assertEqual(themes["orch-run-one"], "soft-dark")
+        self.assertEqual(themes["orch-task-two"], "soft-green")
+
+    def test_direct_proxy_reconnect_uses_remembered_theme(self):
+        manager = dashboard.TtydManager(
+            enabled=False,
+            session_themes={"orch-themed": "soft-dark"},
+        )
+        manager.enabled = True
+        proc = Mock()
+        proc.poll.return_value = None
+
+        with patch.object(
+            dashboard, "tmux_alive", return_value=True,
+        ), patch.object(
+            dashboard, "_enable_tmux_hyperlink_passthrough",
+            return_value=True,
+        ), patch.object(
+            dashboard, "ensure_shadow_session", return_value="orch-themed-web",
+        ), patch.object(
+            manager, "_next_free_port", return_value=7801,
+        ), patch.object(
+            manager, "_wait_for_port", return_value=True,
+        ), patch.object(
+            dashboard.subprocess, "Popen", return_value=proc,
+        ) as popen:
+            port = manager.port_for("orch-themed")
+
+        self.assertEqual(port, 7801)
+        command = popen.call_args.args[0]
+        theme_option = next(
+            value for value in command
+            if isinstance(value, str) and value.startswith("theme=")
+        )
+        self.assertIn('"background":"#1f242c"', theme_option)
+        self.assertEqual(manager.theme_for("orch-themed"), "soft-dark")
+
+    def test_existing_shadow_is_not_reconfigured_on_reconnect(self):
+        with patch.object(
+            dashboard, "tmux_alive", side_effect=[True, True],
+        ), patch.object(dashboard.subprocess, "run") as run:
+            shadow = dashboard.ensure_shadow_session(
+                "orch-task-existing", owner="dashboard-owner",
+            )
+
+        self.assertEqual(shadow, "orch-task-existing-web")
+        run.assert_not_called()
+
+    def test_shadow_option_timeout_does_not_escape_to_asgi(self):
+        created = subprocess.CompletedProcess(
+            args=["tmux", "new-session"], returncode=0,
+            stdout="", stderr="",
+        )
+        with patch.object(
+            dashboard, "tmux_alive", side_effect=[True, False],
+        ), patch.object(
+            dashboard.subprocess, "run",
+            side_effect=[created, subprocess.TimeoutExpired("tmux", 5)],
+        ) as run:
+            shadow = dashboard.ensure_shadow_session(
+                "orch-task-new", owner="dashboard-owner",
+            )
+
+        self.assertEqual(shadow, "orch-task-new-web")
+        self.assertEqual(run.call_count, 2)
 
     def test_ensure_restarts_ttyd_when_shadow_session_is_missing(self):
         manager = dashboard.TtydManager(enabled=False)
@@ -510,6 +993,7 @@ class DashboardAuthenticationTests(unittest.TestCase):
             cls.app = dashboard.create_app(
                 Path("/nonexistent/agent-orchestrator-auth-test"),
                 token="test-token", ttyd_enabled=False,
+                remote_nodes_enabled=False,
             )
 
     @classmethod
@@ -539,6 +1023,7 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertEqual(
                 sessions.json()["instance_id"], health.json()["instance_id"]
             )
+            self.assertIn("remote_nodes", sessions.json())
 
             schema = client.get("/openapi.json").json()
             self.assertNotIn(
@@ -569,7 +1054,7 @@ class DashboardAuthenticationTests(unittest.TestCase):
         }):
             app = dashboard.create_app(
                 Path("/nonexistent/agent-orchestrator-lifespan-test"),
-                ttyd_enabled=False,
+                ttyd_enabled=False, remote_nodes_enabled=False,
             )
 
         with TestClient(app):
@@ -667,7 +1152,9 @@ class SyncStatusTests(unittest.TestCase):
             with patch.object(
                 dashboard, "load_sync_settings", return_value=settings,
             ):
-                app = dashboard.create_app(outputs, ttyd_enabled=False)
+                app = dashboard.create_app(
+                    outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+                )
             with patch.object(app.state.sync_status, "request_sync") as request_sync, \
                     patch.object(app.state.sync_status, "cancel_sync") as cancel_sync:
                 with TestClient(app) as client:
@@ -723,7 +1210,9 @@ class SyncStatusTests(unittest.TestCase):
             with patch.object(
                 dashboard, "load_sync_settings", return_value=settings,
             ):
-                app = dashboard.create_app(outputs, ttyd_enabled=False)
+                app = dashboard.create_app(
+                    outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+                )
             with patch.object(dashboard, "_discover_runs", return_value=runs):
                 paths = app.state.sync_status._busy_paths_provider()
 
@@ -1051,6 +1540,19 @@ Please approve the remote login
         self.assertEqual(progress["goal_state"], "achieved")
         self.assertEqual(waiting["state"], "waiting")
         self.assertEqual(done["state"], "completed")
+
+    def test_goal_active_is_working_without_terminal_output(self):
+        progress = dashboard._extract_terminal_progress(
+            "manual mode on · 2 monitors\n/goal active (18h)"
+        )
+        payload = dashboard._mission_control_payload({
+            "started_at": "2026-09-02T08:00:00",
+            "tmux_session": "orch-goal-active",
+            "panel_state": "p1",
+        }, {"busy": False}, progress)
+        self.assertEqual(progress["goal_state"], "pursuing")
+        self.assertEqual(payload["state"], "working")
+        self.assertFalse(payload["needs_attention"])
 
     def test_timeline_v1_completed_segments_migrate_to_waiting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
