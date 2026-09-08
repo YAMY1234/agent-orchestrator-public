@@ -94,6 +94,25 @@ automation” 这样的任务名称。Idle badge 会显示 pane 已经安静了�
 Pane 边框、优先级标签和 terminal 底部状态会形成统一的视觉语言：先扫描整个
 grid 里的红、黄、蓝、绿，再打开真正需要关注的 task。
 
+## 原生生命周期信号与真正有用的通知
+
+Terminal 是否还在输出是重要信号，但它不一定能区分 agent 正在思考，还是已经把
+控制权交还给用户。Agent Orchestrator 可以安装 Claude Code 的原生生命周期 hook，
+让 waiting、permission、failure 和 completion 状态统一进入 sidebar 与 Mission
+Control timeline：
+
+```bash
+orch install-agent-hooks
+```
+
+默认 hook 只观察状态，不会批准任何权限。通知会打开对应 session 的完整 TTY
+视图；当你查看该 session 时，通知会被确认；同一 session 的新通知会替换旧通知，
+不会不断堆积。
+
+自动处理权限是另一个独立的显式选项，只适用于可信的单用户环境。
+`--claude-permission-policy orchestrator` 只影响由 Agent Orchestrator 启动的 Claude
+sessions，但它仍然意味着工具请求可以不经人工确认，因此启用前应明确评估风险。
+
 ## Terminal 关掉，工作仍然找得回来
 
 Terminal agent 最常见的问题并不是进程崩溃，而是人已经忘了哪个 tab、哪个
@@ -219,16 +238,31 @@ orch url -q         # 只输出 URL
 orch url --json     # 检查所有可访问候选地址
 ```
 
-## 随时知道最新工作在哪台机器
+## 用一个 Dashboard 管理本地和远端 agents
+
+Remote Nodes 让 agent 进程和 tmux session 留在真正执行工作的机器上，同时把它们
+呈现在同一个本地 Dashboard 中。Sidebar 会按地点分组；TTY 输入输出通过轻量的
+HTTP/WebSocket 控制面转发；即使浏览器或本地 Dashboard 关闭，远端工作仍会继续。
+
+在远端使用 `orch dashboard --node-only` 启动服务，通过 SSH tunnel 连接，然后在
+被 Git 忽略的 `dashboard.local.json` 中登记该节点即可。这个能力不要求复制 projects，
+也不要求开启 workspace sync。通用双机配置、安全 token、自动 tunnel 和可选的
+自助重连方式见 [Remote Nodes 指南](docs/remote-nodes.md)。
+
+## 实验性 workspace sync（默认关闭）
 
 如果你同时使用本机和远端开发服务器，可选的 **sync status** 视图会让切换状态
 保持清晰。它分别显示只在本机修改、只在远端修改、两边相同修改，以及真正的
 双端冲突。文件系统事件会快速更新本地变化；低频 reconciliation 则用于捕获遗漏
 事件并刷新远端状态。
 
-状态监控默认只读。**Sync now** 只传输当前安全的单端新增和更新；**Sync when
+它和 Remote Nodes 是彼此独立的能力；只有在被忽略的本地配置中显式设置
+`sync_status.enabled` 后才会启动。状态监控默认只读。**Sync now** 只传输当前安全
+的单端新增和更新；**Sync when
 idle** 会等受影响的本机与远端 agent workspace 都空闲后再执行。持续 auto sync
-默认关闭。冲突、Git refs、超大文件和删除操作都不会被自动应用。
+还需要再次显式开启，并且默认关闭。冲突、Git refs、超大文件和删除操作都不会被
+自动应用。第一次使用应选择较小的 `paths` 并手动建立 baseline，不要直接指向整个
+home 目录。
 
 需要快速切换机器时，每个 session pane 都有独立的 **Sync** 操作。它会根据该
 session 的工作目录和文件系统 Linked Items 推导出最小有效范围，先展示将要同步的

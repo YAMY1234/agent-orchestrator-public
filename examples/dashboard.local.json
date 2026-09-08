@@ -3,6 +3,24 @@
   "projects_browser_url": "http://127.0.0.1:8080/",
   "git_status_url": "http://127.0.0.1:8501/",
   "projects_root": "~/Documents/Projects",
+  "remote_nodes": [
+    {
+      "id": "dev",
+      "label": "Remote dev",
+      "enabled": false,
+      "url": "http://127.0.0.1:17861",
+      "projects_root": "/home/example/Projects",
+      "token_env": "ORCH_REMOTE_DEV_TOKEN",
+      "ssh_host": "dev-server",
+      "local_port": 17861,
+      "remote_port": 7861,
+      "auto_tunnel": false,
+      "poll_interval_seconds": 3,
+      "reconnect": {
+        "enabled": false
+      }
+    }
+  ],
   "sync_status": {
     "enabled": false,
     "label": "Development server",

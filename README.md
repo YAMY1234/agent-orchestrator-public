@@ -102,6 +102,29 @@ Pane borders, priority pills, and terminal status lines work together: you can
 scan red, yellow, blue, and green across the grid, then open only the task that
 actually needs attention.
 
+## Native lifecycle signals and useful notifications
+
+Terminal output is a useful activity signal, but it cannot always distinguish
+an agent that is thinking from one that has returned control to the user.
+Agent Orchestrator can install native Claude Code lifecycle hooks so waiting,
+permission, failure, and completion transitions update the same sidebar and
+Mission Control timeline:
+
+```bash
+orch install-agent-hooks
+```
+
+The default hook is observe-only: it records lifecycle state and does not
+approve permissions. Notifications open the matching full TTY view, are
+acknowledged when that session is inspected, and replace an older notification
+from the same session instead of accumulating duplicates.
+
+Automatic permission handling is a separate, explicit opt-in for trusted
+single-user environments. `--claude-permission-policy orchestrator` applies
+only to Claude sessions launched by Agent Orchestrator, but it still grants
+requested tools without a human confirmation; review that tradeoff before
+enabling it.
+
 ## Close the terminal without losing the work
 
 The usual failure mode with terminal agents is not that the process crashed;
@@ -236,7 +259,21 @@ orch url -q         # print only the URL
 orch url --json     # inspect all reachable candidates
 ```
 
-## Know which machine has the newest work
+## One Dashboard for local and remote agents
+
+Remote Nodes keep agent processes and tmux sessions on their execution
+machines while presenting them in the same local Dashboard. Sessions are
+grouped by location, remote TTY input/output is proxied through a small HTTP
+and WebSocket control plane, and the remote work continues if the browser or
+local Dashboard closes.
+
+Run the remote service with `orch dashboard --node-only`, connect it through
+an SSH tunnel, and list it in the ignored `dashboard.local.json`. This does
+not require copying projects or enabling workspace sync. See the
+[Remote Nodes guide](docs/remote-nodes.md) for a generic two-machine setup,
+safe token handling, automatic tunnels, and optional self-service reconnect.
+
+## Experimental workspace sync (off by default)
 
 If you use a local computer and a remote development server, the optional
 **sync status** view keeps the handoff visible. It shows files changed only on
@@ -245,11 +282,14 @@ and true two-sided conflicts. Filesystem events update local changes quickly;
 a low-frequency reconciliation catches missed events and refreshes the remote
 view.
 
+This feature is separate from Remote Nodes and is disabled unless
+`sync_status.enabled` is explicitly set in the ignored local configuration.
 Monitoring is read-only by default. **Sync now** transfers currently safe
 one-sided additions and updates, while **Sync when idle** waits for affected
 local and remote agent workspaces to become quiet. Continuous auto sync is
-available but starts off. Conflicts, Git refs, oversized files, and deletions
-are never applied automatically.
+another explicit opt-in and starts off. Conflicts, Git refs, oversized files,
+and deletions are never applied automatically. Start with narrow `paths` and a
+manual baseline; do not point a first trial at an entire home directory.
 
 For a faster handoff, each session pane has its own **Sync** action. It derives
 the smallest useful scope from that session's working directory and filesystem
