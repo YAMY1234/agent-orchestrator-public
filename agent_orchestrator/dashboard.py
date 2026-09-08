@@ -51,6 +51,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -64,6 +65,7 @@ from .sync_status import SyncStatusService, load_settings as load_sync_settings
 from .sync_transfer import TransferCancelled
 from .terminal_theme import (
     normalize_terminal_theme as _normalize_terminal_theme,
+    patch_ttyd_index_interactions as _patch_ttyd_index_interactions,
     patch_ttyd_index_theme as _patch_ttyd_index_theme,
     ttyd_theme_client_option as _ttyd_theme_client_option,
 )
@@ -6411,6 +6413,33 @@ def _copy_snapshot_ui_metadata_to_spawned_run(
 SHADOW_SUFFIX = "-web"
 
 
+def _enable_tmux_hyperlink_passthrough() -> bool:
+    """Advertise OSC 8 support for ttyd's xterm-compatible tmux clients."""
+    try:
+        current = subprocess.run(
+            ["tmux", "show-options", "-gv", "terminal-features"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if current.returncode != 0:
+            return False
+        for entry in current.stdout.splitlines():
+            pattern, separator, raw_features = entry.strip().partition(":")
+            if not separator or not fnmatchcase("xterm-256color", pattern):
+                continue
+            if "hyperlinks" in raw_features.split(":"):
+                return True
+        updated = subprocess.run(
+            [
+                "tmux", "set-option", "-as", "terminal-features",
+                ",xterm*:hyperlinks",
+            ],
+            capture_output=True, text=True, timeout=3,
+        )
+        return updated.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
 def shadow_name(session: str) -> str:
     """Canonical shadow session name for a given original session."""
     if session.endswith(SHADOW_SUFFIX):
@@ -6538,6 +6567,7 @@ class TtydManager:
         self._procs: dict[str, tuple[subprocess.Popen, int, str]] = {}
         self._next_port = base_port
         self._owner = f"{os.getpid()}-{uuid.uuid4().hex}"
+        self._tmux_hyperlinks_configured: Optional[bool] = None
         # FastAPI runs sync endpoints in a thread pool, so two iframe loads
         # for the same session can call ensure() concurrently.  Without a
         # lock both callers can spawn a ttyd and the last dict assignment
@@ -6654,6 +6684,10 @@ class TtydManager:
     def _ensure_locked(self, session: str, theme: str = "") -> Optional[int]:
         if not self.enabled or not session or not tmux_alive(session):
             return None
+        if self._tmux_hyperlinks_configured is None:
+            self._tmux_hyperlinks_configured = (
+                _enable_tmux_hyperlink_passthrough()
+            )
         theme = _normalize_terminal_theme(theme)
         existing = self._procs.get(session)
         if existing:
@@ -7363,7 +7397,9 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         if (resp.status_code == 200 and (not subpath or subpath == "index.html")
                 and "text/html" in content_type.lower()):
             theme = ttyd.theme_for(session)
-            patched = _patch_ttyd_index_theme(content, theme)
+            patched = _patch_ttyd_index_interactions(
+                _patch_ttyd_index_theme(content, theme)
+            )
             if patched != content:
                 content = patched
                 resp_headers.pop("etag", None)

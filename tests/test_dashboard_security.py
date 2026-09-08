@@ -206,8 +206,61 @@ class TerminalThemeTests(unittest.TestCase):
             b"unchanged",
         )
 
+    def test_ttyd_interaction_patch_adds_links_and_selection_once(self):
+        original = b"<html><body>terminal</body></html>"
+        patched = terminal_theme.patch_ttyd_index_interactions(original)
+        self.assertIn(b"orch-ttyd-interactions-v1", patched)
+        self.assertIn(b"originalTriggerMouseEvent", patched)
+        self.assertIn(b"_oscLinkService", patched)
+        self.assertIn(b"window.open(pendingUrl", patched)
+        self.assertEqual(
+            terminal_theme.patch_ttyd_index_interactions(patched),
+            patched,
+        )
+        self.assertEqual(
+            terminal_theme.patch_ttyd_index_interactions(b"not html"),
+            b"not html",
+        )
+
 
 class TtydRecoveryTests(unittest.TestCase):
+    def test_tmux_hyperlink_passthrough_preserves_existing_features(self):
+        current = subprocess.CompletedProcess(
+            args=["tmux", "show-options"], returncode=0,
+            stdout="xterm*:clipboard:focus:title\n*:RGB\n", stderr="",
+        )
+        updated = subprocess.CompletedProcess(
+            args=["tmux", "set-option"], returncode=0,
+            stdout="", stderr="",
+        )
+        with patch.object(
+            dashboard.subprocess, "run", side_effect=[current, updated],
+        ) as run:
+            enabled = dashboard._enable_tmux_hyperlink_passthrough()
+
+        self.assertTrue(enabled)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "tmux", "set-option", "-as", "terminal-features",
+                ",xterm*:hyperlinks",
+            ],
+        )
+
+    def test_tmux_hyperlink_passthrough_is_idempotent(self):
+        current = subprocess.CompletedProcess(
+            args=["tmux", "show-options"], returncode=0,
+            stdout="xterm*:clipboard:hyperlinks:title\n", stderr="",
+        )
+        with patch.object(
+            dashboard.subprocess, "run", return_value=current,
+        ) as run:
+            enabled = dashboard._enable_tmux_hyperlink_passthrough()
+
+        self.assertTrue(enabled)
+        run.assert_called_once()
+
     def test_ensure_restarts_ttyd_when_shadow_session_is_missing(self):
         manager = dashboard.TtydManager(enabled=False)
         manager.enabled = True
@@ -220,6 +273,9 @@ class TtydRecoveryTests(unittest.TestCase):
             dashboard,
             "tmux_alive",
             side_effect=lambda name: name == "orch-task-1",
+        ), patch.object(
+            dashboard, "_enable_tmux_hyperlink_passthrough",
+            return_value=True,
         ), patch.object(
             manager, "_stop_proc"
         ) as stop_proc, patch.object(

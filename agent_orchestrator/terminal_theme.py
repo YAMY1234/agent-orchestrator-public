@@ -113,6 +113,160 @@ _TTYD_DARK_THEME_JS = (
     'brightCyan:"#37e6e8",brightWhite:"#f1f1f0"}'
 )
 
+_TTYD_INTERACTION_MARKER = "orch-ttyd-interactions-v1"
+_TTYD_INTERACTION_SCRIPT = r"""<script id="orch-ttyd-interactions-v1">
+(() => {
+  const install = () => {
+    const terminal = window.term;
+    const core = terminal && terminal._core;
+    const screen = document.querySelector(".xterm-screen");
+    const mouse = core && core.coreMouseService;
+    const selection = core && core._selectionService;
+    if (!terminal || !screen || !mouse || !selection) return false;
+    if (mouse.__orchInteractionPatch) return true;
+
+    let mode = "";
+    let pendingUrl = "";
+    let startX = 0;
+    let startY = 0;
+    const originalTriggerMouseEvent = mouse.triggerMouseEvent.bind(mouse);
+    mouse.triggerMouseEvent = (event) => (
+      mode ? false : originalTriggerMouseEvent(event)
+    );
+    mouse.__orchInteractionPatch = true;
+
+    const coordsForEvent = (event) => {
+      try {
+        const coords = selection._getMouseBufferCoords(event);
+        if (coords && coords.length === 2) return coords;
+      } catch (_) {}
+      const rect = screen.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const col = Math.max(0, Math.min(
+        terminal.cols - 1,
+        Math.floor((event.clientX - rect.left) * terminal.cols / rect.width),
+      ));
+      const row = Math.max(0, Math.min(
+        terminal.rows - 1,
+        Math.floor((event.clientY - rect.top) * terminal.rows / rect.height),
+      ));
+      return [col, terminal.buffer.active.viewportY + row];
+    };
+
+    const urlForEvent = (event) => {
+      const coords = coordsForEvent(event);
+      if (!coords) return "";
+      const [col, row] = coords;
+      const buffer = terminal.buffer.active;
+      const line = row >= 0 && row < buffer.length
+        ? buffer.getLine(row)
+        : null;
+      if (!line) return "";
+
+      // Claude and Codex render Markdown links as OSC 8 hyperlinks: the
+      // visible label may be `owner/repo#123` while the URL is stored in the
+      // xterm cell metadata. Check that metadata before falling back to
+      // searching for a literal https:// string on the screen.
+      try {
+        const cell = line.getCell(col);
+        const extended = cell && cell.extended;
+        const urlId = Number(
+          extended && (extended.urlId || extended._urlId || 0),
+        );
+        const service = core && core._oscLinkService;
+        if (urlId && service && typeof service.getLinkData === "function") {
+          const linkData = service.getLinkData(urlId);
+          const oscUrl = typeof linkData === "string"
+            ? linkData
+            : String((linkData && (linkData.uri || linkData.url)) || "");
+          if (/^https?:\/\//i.test(oscUrl)) return oscUrl;
+        }
+      } catch (_) {}
+
+      let first = row;
+      while (first > 0 && buffer.getLine(first)?.isWrapped) first -= 1;
+      let last = row;
+      while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) {
+        last += 1;
+      }
+      let text = "";
+      for (let index = first; index <= last; index += 1) {
+        text += buffer.getLine(index)?.translateToString(false) || "";
+      }
+      const offset = (row - first) * terminal.cols + col;
+      const pattern = /https?:\/\/[^\s<>"'`]+/g;
+      for (const match of text.matchAll(pattern)) {
+        const raw = match[0];
+        const url = raw.replace(/[.,;:!?]+$/, "");
+        const begin = match.index || 0;
+        if (offset >= begin && offset < begin + url.length) return url;
+      }
+      return "";
+    };
+
+    const clearMode = () => {
+      mode = "";
+      pendingUrl = "";
+    };
+
+    screen.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      startX = event.clientX;
+      startY = event.clientY;
+      if (event.altKey) {
+        // Older xterm.js releases still emit a mouse-release report after an
+        // Option-drag selection. tmux redraws on that report and erases the
+        // selection. Keep mouse reporting muted through the matching mouseup.
+        mode = "selection";
+        return;
+      }
+      pendingUrl = urlForEvent(event);
+      if (!pendingUrl) return;
+      mode = "link";
+    }, true);
+
+    screen.addEventListener("mousemove", (event) => {
+      if (event.buttons) return;
+      const layer = screen.querySelector(".xterm-link-layer");
+      if (layer) layer.style.cursor = urlForEvent(event) ? "pointer" : "default";
+    }, true);
+
+    document.addEventListener("mouseup", (event) => {
+      if (mode === "selection") {
+        // Let xterm finalize the selection first; keep the mouse report muted
+        // until every listener for this mouseup event has run.
+        setTimeout(clearMode, 0);
+        return;
+      }
+      if (mode !== "link") return;
+      const moved = Math.hypot(
+        event.clientX - startX,
+        event.clientY - startY,
+      ) > 6;
+      // ttyd's built-in xterm handler displays a confirmation dialog for
+      // every OSC 8 link. Handle the validated http(s) URL here, before that
+      // mouseup handler runs, so one click opens one tab without a prompt.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!moved) {
+        window.open(pendingUrl, "_blank", "noopener,noreferrer");
+      }
+      clearMode();
+    }, true);
+
+    window.addEventListener("blur", clearMode);
+    return true;
+  };
+
+  if (install()) return;
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    if (install() || attempts >= 100) clearInterval(timer);
+  }, 50);
+})();
+</script>"""
+
 
 def normalize_terminal_theme(theme: str) -> str:
     theme = (theme or "").strip().lower().replace("_", "-").replace(" ", "-")
@@ -155,3 +309,81 @@ def patch_ttyd_index_theme(content: bytes, theme: str) -> bytes:
     if patched == text:
         return content
     return patched.encode("utf-8")
+
+
+class TtydOutputThemeMapper:
+    """Map a TUI's explicit true-color black background to the pane theme.
+
+    Recent Codex TUIs paint every cell with ``ESC[48;2;0;0;0m``.  That is an
+    explicit RGB color, so xterm's configured background and ANSI ``black``
+    palette cannot override it.  ttyd prefixes terminal-output WebSocket
+    messages with the byte ``0``; this mapper rewrites only that exact
+    background sequence and preserves every other color and protocol message.
+    """
+
+    _BLACK_BACKGROUND = b"\x1b[48;2;0;0;0m"
+
+    def __init__(self, theme: str):
+        palette = _TTYD_THEME_PALETTES.get(normalize_terminal_theme(theme))
+        background = palette.get("background", "") if palette else ""
+        self._replacement = b""
+        if len(background) == 7 and background.startswith("#"):
+            try:
+                red = int(background[1:3], 16)
+                green = int(background[3:5], 16)
+                blue = int(background[5:7], 16)
+                self._replacement = (
+                    f"\x1b[48;2;{red};{green};{blue}m".encode("ascii")
+                )
+            except ValueError:
+                pass
+        self._pending = b""
+
+    def transform(self, message):
+        if not self._replacement or not isinstance(message, bytes):
+            return [message]
+        if not message.startswith(b"0"):
+            output = []
+            if self._pending:
+                output.append(b"0" + self._pending)
+                self._pending = b""
+            output.append(message)
+            return output
+
+        data = self._pending + message[1:]
+        keep = 0
+        maximum = min(len(data), len(self._BLACK_BACKGROUND) - 1)
+        for size in range(maximum, 0, -1):
+            if data.endswith(self._BLACK_BACKGROUND[:size]):
+                keep = size
+                break
+        body = data[:-keep] if keep else data
+        self._pending = data[-keep:] if keep else b""
+        body = body.replace(self._BLACK_BACKGROUND, self._replacement)
+        return [b"0" + body] if body else []
+
+    def finish(self):
+        if not self._pending:
+            return None
+        message = b"0" + self._pending
+        self._pending = b""
+        return message
+
+
+def patch_ttyd_index_interactions(content: bytes) -> bytes:
+    """Add reliable link and Option-drag behavior to ttyd's xterm page.
+
+    ttyd 1.7.x bundles an xterm.js release that can emit a final tmux mouse
+    report after an Option-drag selection. The resulting redraw immediately
+    clears the selection. The same mouse-reporting path consumes ordinary URL
+    clicks. Inject a small, idempotent compatibility layer into the HTML page;
+    it leaves keyboard input and normal tmux mouse behavior unchanged.
+    """
+    if not content or _TTYD_INTERACTION_MARKER.encode() in content:
+        return content
+    text = content.decode("utf-8", "ignore")
+    if "</body>" not in text:
+        return content
+    return text.replace(
+        "</body>", _TTYD_INTERACTION_SCRIPT + "</body>", 1,
+    ).encode("utf-8")
