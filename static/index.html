@@ -11062,6 +11062,7 @@
   let reconnectNodeId = "";
   let reconnectNodeLabel = "";
   let reconnectPollTimer = null;
+  let reconnectPollGeneration = 0;
   let reconnectRetryTimer = null;
   let reconnectChallengeKey = "";
   let reconnectStatusPhase = "idle";
@@ -11123,8 +11124,19 @@
   }
 
   function stopNodeReconnectPolling() {
-    if (reconnectPollTimer) clearInterval(reconnectPollTimer);
+    reconnectPollGeneration += 1;
+    if (reconnectPollTimer) clearTimeout(reconnectPollTimer);
     reconnectPollTimer = null;
+  }
+
+  function scheduleNodeReconnectPoll(delay = 1000) {
+    if (!reconnectNodeId || $("reconnect-modal").hidden) return;
+    const generation = reconnectPollGeneration;
+    if (reconnectPollTimer) clearTimeout(reconnectPollTimer);
+    reconnectPollTimer = setTimeout(() => {
+      reconnectPollTimer = null;
+      void pollNodeReconnect(generation);
+    }, delay);
   }
 
   function stopNodeReconnectRetry() {
@@ -11155,10 +11167,7 @@
           method: "POST",
         });
         renderNodeReconnectStatus(next);
-        if (!reconnectPollTimer) {
-          reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
-        }
-        void pollNodeReconnect();
+        scheduleNodeReconnectPoll(0);
       } catch (error) {
         scheduleNodeReconnectRetry({
           label: reconnectNodeLabel,
@@ -11179,21 +11188,42 @@
     }, 3500);
   }
 
-  async function pollNodeReconnect() {
-    if (!reconnectNodeId) return;
+  async function pollNodeReconnect(generation = reconnectPollGeneration) {
+    if (!reconnectNodeId || generation !== reconnectPollGeneration) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
-      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect`);
+      const status = await api(`/api/nodes/${encodeURIComponent(reconnectNodeId)}/reconnect`, {
+        signal: controller.signal,
+      });
+      if (generation !== reconnectPollGeneration || $("reconnect-modal").hidden) return;
       renderNodeReconnectStatus(status);
       if (["succeeded", "failed", "cancelled"].includes(status.phase)) {
         stopNodeReconnectPolling();
         if (status.phase === "succeeded") {
           stopNodeReconnectRetry();
-          void refreshAfterNodeReconnect();
         } else if (status.phase === "failed" && scheduleNodeReconnectRetry(status)) {
           return;
         }
+        // A reconnect may have been cancelled just as a managed tunnel came
+        // back. Refresh every terminal outcome so the sidebar follows actual
+        // node health instead of retaining its pre-reconnect offline state.
+        void refreshAfterNodeReconnect();
+      } else {
+        scheduleNodeReconnectPoll();
       }
     } catch (error) {
+      if (generation !== reconnectPollGeneration || $("reconnect-modal").hidden) return;
+      if (error?.name === "AbortError") {
+        renderNodeReconnectStatus({
+          label: reconnectNodeLabel,
+          phase: "running",
+          step: "health",
+          message: "Reconnect status check timed out; retrying…",
+        });
+        scheduleNodeReconnectPoll();
+        return;
+      }
       renderNodeReconnectStatus({
         label: reconnectNodeLabel,
         phase: "failed",
@@ -11201,6 +11231,8 @@
         message: `Reconnect status failed: ${error.message}`,
       });
       stopNodeReconnectPolling();
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -11224,8 +11256,7 @@
         method: "POST",
       });
       renderNodeReconnectStatus(status);
-      reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
-      void pollNodeReconnect();
+      scheduleNodeReconnectPoll(0);
     } catch (error) {
       renderNodeReconnectStatus({
         label: reconnectNodeLabel,
@@ -11275,7 +11306,7 @@
         method: "POST",
       });
       renderNodeReconnectStatus(status);
-      if (!reconnectPollTimer) reconnectPollTimer = setInterval(pollNodeReconnect, 1000);
+      if (!reconnectPollTimer) scheduleNodeReconnectPoll();
     } catch (error) {
       alert("Continue reconnect failed:\n" + error.message);
     } finally {
@@ -11297,7 +11328,7 @@
         method: "POST",
       });
       renderNodeReconnectStatus(status);
-      if (!reconnectPollTimer) reconnectPollTimer = setInterval(pollNodeReconnect, 500);
+      if (!reconnectPollTimer) scheduleNodeReconnectPoll(500);
     } catch (error) {
       alert("Cancel reconnect failed:\n" + error.message);
     }

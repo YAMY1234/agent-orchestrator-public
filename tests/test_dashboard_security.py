@@ -460,6 +460,11 @@ class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
         self.assertIn("/reconnect/continue", self.source)
         self.assertIn("/reconnect/cancel", self.source)
 
+    def test_remote_reconnect_status_polling_is_serial_and_bounded(self):
+        self.assertIn("function scheduleNodeReconnectPoll", self.source)
+        self.assertIn("const controller = new AbortController();", self.source)
+        self.assertNotIn("setInterval(pollNodeReconnect", self.source)
+
     def test_active_sessions_suppress_attention_visuals(self):
         self.assertIn("function sessionActivityMode(s)", self.source)
         attention_start = self.source.index(

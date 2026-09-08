@@ -114,6 +114,43 @@ class RemoteNodeSettingsTest(unittest.TestCase):
 
 
 class RemoteNodeReconnectManagerTest(unittest.TestCase):
+    def test_recovery_during_transport_skips_unneeded_credential_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            healthy = root / "healthy"
+            credential_ran = root / "credential-ran"
+            transport = (
+                "import pathlib; "
+                f"pathlib.Path({str(healthy)!r}).write_text('ok')"
+            )
+            credential = (
+                "import pathlib; "
+                f"pathlib.Path({str(credential_ran)!r}).write_text('unexpected')"
+            )
+            settings = settings_from_dict({"remote_nodes": [{
+                "id": "dev",
+                "label": "Dev box",
+                "url": "http://127.0.0.1:1",
+                "reconnect": {
+                    "enabled": True,
+                    "transport_probe_command": [sys.executable, "-c", transport],
+                    "credential_probe_command": [sys.executable, "-c", credential],
+                    "start_command": [
+                        sys.executable, "-c", "raise SystemExit(99)",
+                    ],
+                },
+            }]})
+            manager = RemoteNodeReconnectManager(
+                settings, health_check=lambda _: healthy.exists(),
+            )
+            try:
+                manager.start("dev")
+                finished = self._wait_for_phase(manager, "dev", "succeeded")
+                self.assertEqual(finished["message"], "Dev box is online again.")
+                self.assertFalse(credential_ran.exists())
+            finally:
+                manager.stop()
+
     def test_non_pty_tunnel_waits_for_forwarded_port(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

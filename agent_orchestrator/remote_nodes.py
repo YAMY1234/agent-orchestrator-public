@@ -804,6 +804,14 @@ class RemoteNodeReconnectManager:
                 ):
                     raise RuntimeError("SSH connected, but the local tunnel port did not open")
 
+            # The dashboard can recover independently while the SSH/tunnel
+            # checks are running (for example when a managed tunnel reconnects
+            # in the background).  Once health is back, do not continue into a
+            # credential prompt that is no longer needed.
+            if self._health_check(node):
+                self._finish(node, "succeeded", f"{node.label} is online again.")
+                return
+
             if reconnect.credential_probe_command:
                 self._set(
                     node.id, step="credentials",
