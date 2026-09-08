@@ -6348,6 +6348,29 @@
     ctrl.usingTty = false;
   }
 
+  const ttyShortcutDocuments = new WeakSet();
+  function bridgeTtyControlSlash(iframe, runId) {
+    iframe.addEventListener("load", () => {
+      let frameDocument = null;
+      try {
+        frameDocument = iframe.contentDocument;
+      } catch (_) {
+        return;
+      }
+      if (!frameDocument || ttyShortcutDocuments.has(frameDocument)) return;
+      ttyShortcutDocuments.add(frameDocument);
+      frameDocument.addEventListener("keydown", (event) => {
+        const controlSlash = event.ctrlKey && !event.metaKey && !event.altKey
+          && (event.key === "/" || event.code === "Slash");
+        if (!controlSlash) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+        if (!event.repeat) void sendKey(runId, "C-_");
+      }, { capture: true });
+    });
+  }
+
   async function attachPaneView(ctrl, { priority = false } = {}) {
     const { runId, paneEl } = ctrl;
     const s = currentSessionForPane(ctrl);
@@ -6379,6 +6402,7 @@
           if (theme === "soft-dark") ifr.classList.add("terminal-soft-dark-frame");
           if (theme === "soft-light") ifr.classList.add("terminal-soft-light-frame");
           if (theme === "soft-green") ifr.classList.add("terminal-soft-green-frame");
+          bridgeTtyControlSlash(ifr, runId);
           paneEl.classList.add("pane-tty");
           paneEl.classList.remove("empty");
           paneEl.classList.toggle("terminal-light", theme === "light");
