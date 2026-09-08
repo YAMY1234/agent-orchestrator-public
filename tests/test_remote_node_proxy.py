@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import uvicorn
+from uvicorn.config import WS_PROTOCOLS
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
@@ -107,12 +108,22 @@ class RemoteNodeProxyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.port = _free_port()
+        # Uvicorn's auto selector still imports the deprecated
+        # ``websockets.legacy`` implementation with newer websockets releases.
+        # The suite treats warnings as errors, so prefer the modern SansIO
+        # protocol when the installed Uvicorn provides it. Older supported
+        # Uvicorn versions continue to use their normal auto selection.
+        ws_protocol = (
+            "websockets-sansio"
+            if "websockets-sansio" in WS_PROTOCOLS else "auto"
+        )
         cls.server = uvicorn.Server(uvicorn.Config(
             _fake_remote_node(),
             host="127.0.0.1",
             port=cls.port,
             log_level="error",
             access_log=False,
+            ws=ws_protocol,
         ))
         cls.thread = threading.Thread(target=cls.server.run, daemon=True)
         cls.thread.start()
