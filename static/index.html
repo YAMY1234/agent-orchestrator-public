@@ -663,10 +663,15 @@
     border-color: rgba(88,166,255,.55);
   }
   .pane-state-select {
-    min-width: 78px;
+    width: 50px;
+    min-width: 50px;
     height: 24px;
+    padding: 3px 3px;
     border-radius: 6px;
     font-weight: 600;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-align: center;
+    text-align-last: center;
     background: var(--bg);
   }
   .pane-theme-select {
@@ -2451,6 +2456,10 @@
     position: absolute; top: -2px; right: -2px;
   }
   #btn-notif { position: relative; }
+  #priority-reminder-select.on {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
 </style>
 </head>
 <body>
@@ -2802,6 +2811,11 @@
       <div class="spacer"></div>
       <div class="quick-actions" aria-label="Quick actions">
         <button id="btn-mission-control" title="Monitor progress across all active sessions">mission control</button>
+        <select id="priority-reminder-select" title="Optional reminders for high-priority sessions that remain waiting and unseen">
+          <option value="off">reminders: off</option>
+          <option value="p0">P0 reminder: 10m</option>
+          <option value="p0p1">P0/P1 reminder: 10m</option>
+        </select>
         <button id="btn-sync-status" title="Read-only workspace sync status" hidden>sync: …</button>
         <button id="btn-open-notes" title="Open daily report (⌘D)">daily report</button>
         <button id="btn-open-projects-browser" title="Open local Projects browser">projects</button>
@@ -2859,6 +2873,15 @@
     ["watching", "Watching"],
     ["done", "Done"],
   ];
+  const PANE_STATE_SHORT_LABELS = {
+    "": "F",
+    p0: "P0",
+    p1: "P1",
+    p2: "P2",
+    blocked: "B",
+    watching: "W",
+    done: "D",
+  };
   const TERMINAL_THEME_OPTIONS = [
     ["", "Dark"],
     ["soft-dark", "Soft Dark"],
@@ -4472,48 +4495,80 @@
     applyRankedPanelSelection(ranked, "Showing most active");
   }
 
-  // ---------- Idle notification ----------
-  // Surfaces an optional system Notification for any alive
-  // session that has been idle for `IDLE_TRIGGER_MS` and is therefore
-  // almost certainly waiting on the user. The busy signal itself is
-  // already computed server-side (`s.busy` on /api/sessions, based on
-  // a ~1.5s tmux pane-content hash OR explicit background-running status —
-  // see _probe_session_activity in dashboard.py); here we just turn its
-  // trailing edge into a UX event.
+  // ---------- Agent lifecycle notification ----------
+  // Codex transcript events and Claude lifecycle hooks are authoritative.
+  // The old terminal-output idle heuristic remains only for agents that do
+  // not expose a native lifecycle signal.
   //
-  // Trigger model is "idle-duration + cooldown" (NOT pure edge):
-  //   - When a session has been idle ≥ IDLE_TRIGGER_MS we fire ONCE,
-  //     then start a `RENOTIFY_COOLDOWN_MS` quiet period.
-  //   - Any busy spell during the quiet period resets idleSince so the
-  //     next idle stretch is treated as a brand-new "waiting" event.
+  // Default notifications are edge-triggered:
+  //   - One notification when a working session becomes waiting.
+  //   - Remaining idle never produces another default notification.
+  //   - A new busy spell arms the next working -> waiting transition.
+  // Optional P0/P1 reminders are a separate, explicit opt-in. They repeat
+  // every ten minutes only while a high-priority session remains unseen.
   //   - When the user enables notifications OR the page first loads,
   //     we treat every existing session as "just notified" so we don't
   //     paper-flood with a toast for every long-idle agent.
   //
-  // We avoid the previous edge-only design (require busy→idle) because
-  // many agents spend most of their life already idle waiting for
-  // input — they'd never have transitioned and would never fire.
   const idleNotif = (() => {
     // IDLE_TRIGGER_MS > server's _BUSY_IDLE_SECONDS (2s) so a single
     // slow-to-emit token doesn't look like "done".
     const IDLE_TRIGGER_MS = 3000;
-    // After we notify for a session, stay silent for this long unless
-    // it goes busy again (in which case the next idle stretch resets
-    // the clock and can re-fire as soon as IDLE_TRIGGER_MS passes).
-    const RENOTIFY_COOLDOWN_MS = 60000;
+    const PRIORITY_REMINDER_MS = 10 * 60 * 1000;
     // Keep Chrome/system notifications, but suppress the dashboard's
     // own bottom-right toast popups. This is intentionally a single
     // switch so the in-page UI can be restored later if wanted.
     const SHOW_IN_PAGE_TOASTS = false;
 
-    // run_id -> { wasBusy, idleSince, lastNotifAt }
+    // run_id -> lifecycle notification and optional reminder state.
     const tracks = new Map();
 
-    const STORAGE_KEY = "orch_notif_enabled";
-    let enabled = localStorage.getItem(STORAGE_KEY) === "1";
+    // v2 intentionally resets the old output-idle preference: native
+    // lifecycle notifications are a different, much less noisy signal.
+    const STORAGE_KEY = "orch_agent_notif_enabled_v2";
+    const REMINDER_STORAGE_KEY = "orch_priority_reminder_v1";
+    const storedEnabled = localStorage.getItem(STORAGE_KEY);
+    let enabled = storedEnabled === "1" || (
+      storedEnabled === null
+      && typeof Notification !== "undefined"
+      && Notification.permission === "granted"
+    );
     let btnEl = null;
+    let reminderEl = null;
+    let reminderMode = localStorage.getItem(REMINDER_STORAGE_KEY) || "off";
+    if (!["off", "p0", "p0p1"].includes(reminderMode)) reminderMode = "off";
     let permState = (typeof Notification !== "undefined")
       ? Notification.permission : "unsupported";
+    let audioContext = null;
+
+    function armSound() {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      try {
+        audioContext = audioContext || new AudioCtx();
+        if (audioContext.state === "suspended") audioContext.resume();
+      } catch (_) {}
+    }
+
+    function playSound() {
+      armSound();
+      if (!audioContext || audioContext.state !== "running") return;
+      try {
+        const now = audioContext.currentTime;
+        const gain = audioContext.createGain();
+        const tone = audioContext.createOscillator();
+        tone.type = "sine";
+        tone.frequency.setValueAtTime(660, now);
+        tone.frequency.setValueAtTime(880, now + 0.11);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.12, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+        tone.connect(gain);
+        gain.connect(audioContext.destination);
+        tone.start(now);
+        tone.stop(now + 0.30);
+      } catch (_) {}
+    }
 
     function syncButton() {
       if (!btnEl) return;
@@ -4522,10 +4577,10 @@
         enabled && permState === "denied");
       btnEl.textContent = enabled ? "🔔" : "🔕";
       const lines = [
-        enabled ? "Idle notifications: ON"
-                : "Idle notifications: OFF",
-        "Fires when an agent stops producing output",
-        "and is likely waiting for you. Click to toggle.",
+        enabled ? "Agent notifications: ON"
+                : "Agent notifications: OFF",
+        "Fires when Codex or Claude finishes a turn",
+        "or explicitly needs your input. Click to toggle.",
       ];
       if (enabled && permState === "denied") {
         lines.push("");
@@ -4538,10 +4593,57 @@
       btnEl.title = lines.join("\n");
     }
 
+    function syncReminderControl() {
+      if (!reminderEl) return;
+      reminderEl.value = reminderMode;
+      reminderEl.classList.toggle("on", reminderMode !== "off");
+      reminderEl.title = reminderMode === "off"
+        ? "High-priority idle reminders are off (opt-in)"
+        : "Remind every 10 minutes while an unseen high-priority session remains waiting";
+    }
+
+    function reminderEligible(s) {
+      const priority = String(s?.panel_state || "").toLowerCase();
+      if (reminderMode === "p0") return priority === "p0";
+      if (reminderMode === "p0p1") return priority === "p0" || priority === "p1";
+      return false;
+    }
+
+    async function changeReminderMode() {
+      reminderMode = reminderEl?.value || "off";
+      localStorage.setItem(REMINDER_STORAGE_KEY, reminderMode);
+      if (reminderMode !== "off") {
+        armSound();
+        if (typeof Notification !== "undefined"
+            && Notification.permission === "default") {
+          try {
+            permState = await Notification.requestPermission();
+          } catch (_) {}
+        } else if (typeof Notification !== "undefined") {
+          permState = Notification.permission;
+        }
+        // Enabling reminders starts a fresh ten-minute grace period. It must
+        // never immediately flood notifications for already-idle sessions.
+        const now = Date.now();
+        for (const [runId, t] of tracks) {
+          const s = sessions.find(x => x.run_id === runId);
+          if (s && reminderEligible(s) && s.alive && !s.busy) {
+            t.acknowledgedIdle = false;
+            t.lastPriorityReminderAt = now;
+          }
+        }
+      }
+      syncButton();
+      syncReminderControl();
+    }
+
     async function toggle() {
       if (!enabled) {
         enabled = true;
         localStorage.setItem(STORAGE_KEY, "1");
+        // A click is a browser user gesture, so it is also the right moment
+        // to unlock Web Audio for a reliable audible cue in background tabs.
+        armSound();
         // Ask for system-notification permission the FIRST time the user
         // opts in.
         if (typeof Notification !== "undefined"
@@ -4552,13 +4654,10 @@
         } else if (typeof Notification !== "undefined") {
           permState = Notification.permission;
         }
-        // Reset cooldowns: we don't want every already-idle session
-        // to fire a toast the moment the user flips this on. Each
-        // session must either go busy (and back to idle) OR sit idle
-        // through a full RENOTIFY_COOLDOWN_MS before its first toast.
-        const now = Date.now();
+        // Existing idle sessions stay acknowledged. Enabling normal
+        // notifications must not create an immediate idle-session flood.
         for (const t of tracks.values()) {
-          t.lastNotifAt = now;
+          t.notifiedForIdle = true;
         }
       } else {
         enabled = false;
@@ -4567,32 +4666,114 @@
       syncButton();
     }
 
-    function attach(btn) {
+    function attach(btn, reminderSelect) {
       btnEl = btn;
       btnEl.addEventListener("click", toggle);
+      reminderEl = reminderSelect;
+      reminderEl?.addEventListener("change", changeReminderMode);
+      if (enabled) {
+        // Existing permission can survive page reload, but Web Audio's
+        // gesture grant does not. The first normal dashboard interaction
+        // silently re-arms the audible cue for this page lifetime.
+        const unlock = () => armSound();
+        document.addEventListener("pointerdown", unlock, { once: true, capture: true });
+        document.addEventListener("keydown", unlock, { once: true, capture: true });
+      }
       syncButton();
+      syncReminderControl();
+    }
+
+    function acknowledge(runId) {
+      const requested = sessions.find(x => x.run_id === runId);
+      const canonical = canonicalSession(requested);
+      const t = canonical ? tracks.get(canonical.run_id) : null;
+      if (t) t.acknowledgedIdle = true;
     }
 
     // Build a short human-readable hint shown in the toast body.
     function describe(s) {
+      const native = s.native_activity || {};
+      if (native.state === "needs_input") {
+        return native.reason || "The agent needs your input.";
+      }
+      if (native.state === "ended") {
+        return native.reason || "The agent session ended.";
+      }
       const mode = s.mode ? ` · ${s.mode}` : "";
       const agent = s.agent || "agent";
       const round = s.max_rounds ? ` · round ${s.round || 0}/${s.max_rounds}` : "";
-      return `${agent}${mode}${round} stopped — waiting for input.`;
+      return native.reason || `${agent}${mode}${round} finished — waiting for input.`;
+    }
+
+    function nativeIdentity(s) {
+      if (!s) return "";
+      const resumeId = String(s.resume_id || s.resume?.id || "").trim().toLowerCase();
+      if (!resumeId) return "";
+      const rawAgent = String(s.agent || "").trim().toLowerCase();
+      const agent = rawAgent.includes("codex") ? "codex"
+        : rawAgent.includes("claude") ? "claude" : rawAgent;
+      return agent ? `${agent}:${resumeId}` : "";
+    }
+
+    function canonicalSession(s) {
+      if (!s) return null;
+      const identity = nativeIdentity(s);
+      if (!identity) return s;
+      const matches = sessions.filter(x => nativeIdentity(x) === identity);
+      if (!matches.length) return s;
+      matches.sort((a, b) => {
+        if (!!a.alive !== !!b.alive) return a.alive ? -1 : 1;
+        return parseEpochMs(b.started_at) - parseEpochMs(a.started_at);
+      });
+      return matches[0];
     }
 
     function focusSession(runId) {
-      // Mirror what clicking a sidebar item does: put the run in the
-      // first free slot (or replace slot 0 if full) and re-render.
-      const s = sessions.find(x => x.run_id === runId);
+      // Notifications may outlive a historical Orchestrator run in the OS
+      // notification center. Resolve its native conversation to the current
+      // live run before opening anything.
+      const requested = sessions.find(x => x.run_id === runId);
+      const s = canonicalSession(requested);
       if (!s) return;
-      const idx = (typeof placeInFirstFree === "function")
-        ? placeInFirstFree(runId)
-        : -1;
-      if (idx < 0) return;
-      if (typeof saveSlots === "function") saveSlots();
+      runId = s.run_id;
+      acknowledge(runId);
+      // If this run is not pinned, borrow a pane only for the enlarged
+      // notification view. Closing it restores the exact original layout;
+      // notification clicks never persistently replace slot 0.
+      closePaneZoom();
+      const originalSlots = slots.slice();
+      let idx = slotOf(runId);
+      const temporaryPlacement = idx < 0;
+      if (temporaryPlacement) {
+        idx = slots.findIndex(x => x == null);
+        if (idx < 0) idx = 0;
+        slots[idx] = runId;
+      }
       if (typeof renderList === "function") renderList();
       if (typeof renderGrid === "function") renderGrid();
+      // Notification clicks should land on the useful detail view, not only
+      // silently pin the session somewhere in a multi-pane grid.
+      requestAnimationFrame(async () => {
+        const ctrl = paneCtrls.get(runId);
+        if (ctrl && ctrl.cardEl) {
+          highlightPaneForSession(runId, { scroll: false });
+          openPaneZoom(ctrl.cardEl, temporaryPlacement ? {
+            onClose: () => {
+              slots = originalSlots;
+              renderList();
+              renderGrid();
+            },
+          } : undefined);
+          // A notification may be clicked while the global view is plain,
+          // or while this pane is reusing a cached plain renderer. The
+          // notification destination is explicitly the detailed TTY view,
+          // independent of that global preference.
+          const needsTtyAttach = health.ttyd && s.alive && !ctrl.usingTty;
+          if (needsTtyAttach) {
+            await attachPaneView(ctrl, { priority: true, forceTty: true });
+          }
+        }
+      });
       // On mobile the sidebar drawer may be covering the panes — close it
       // via the scrim click path if that helper exists.
       const scrim = document.getElementById("sidebar-scrim");
@@ -4600,6 +4781,12 @@
     }
 
     const toasts = new Map();  // run_id -> toast element
+    // Native conversation identity -> currently displayed OS notification.
+    // A stable browser tag replaces the previous card for that conversation,
+    // including across dashboard reloads. Do not also call close() on the old
+    // object here: Chromium forwards close asynchronously and macOS can apply
+    // that delayed close to the just-created replacement with the same tag.
+    const systemNotifs = new Map();
 
     function fireToast(s) {
       if (!SHOW_IN_PAGE_TOASTS) return;
@@ -4658,29 +4845,66 @@
       }
     }
 
-    function fireSystemNotif(s) {
+    function fireSystemNotif(s, { reminder = false } = {}) {
       if (permState !== "granted") return;
-      if (document.visibilityState === "visible"
-          && document.hasFocus()) {
-        // Tab is already foregrounded — the toast is sufficient,
-        // system notification would just be noise.
-        return;
-      }
       try {
+        const sessionName = s.display_name || s.task || s.run_name || s.run_id;
+        const notifKey = nativeIdentity(s) || s.run_id;
+        const nativeState = s.native_activity?.state || "waiting_user";
+        const prefix = reminder
+          ? `${String(s.panel_state || "").toUpperCase()} still waiting: `
+          : nativeState === "needs_input"
+          ? "Agent needs input: "
+          : nativeState === "ended" ? "Agent ended: " : "Agent ready: ";
         const n = new Notification(
-          "Agent idle: " + (s.display_name || s.task || s.run_id),
+          prefix + sessionName,
           {
-            body: describe(s),
-            tag: "orch-idle-" + s.run_id,  // dedupe at the OS level
+            body: reminder
+              ? `Session: ${sessionName}\nStill waiting after 10 minutes · ${describe(s)}`
+              : `Session: ${sessionName}\n${describe(s)}`,
+            // Repeated Orchestrator resumes of one native conversation share
+            // a tag, so a fresh notification replaces its stale alias.
+            tag: "orch-idle-" + notifKey,
+            renotify: true,
             silent: false,
           }
         );
+        systemNotifs.set(notifKey, n);
+        const closeCurrent = () => {
+          if (systemNotifs.get(notifKey) !== n) return;
+          systemNotifs.delete(notifKey);
+          try { n.close(); } catch (_) {}
+        };
         n.onclick = () => {
           try { window.focus(); } catch (_) {}
           focusSession(s.run_id);
-          n.close();
+          closeCurrent();
         };
+        n.onclose = () => {
+          if (systemNotifs.get(notifKey) === n) systemNotifs.delete(notifKey);
+        };
+        // Keep the latest card visible until the user opens or dismisses it.
+        // The next event for this same native session replaces it by tag, so
+        // an unattended session still occupies at most one notification.
       } catch (_) { /* Safari quirks — ignore */ }
+    }
+
+    function notify(s, options = {}) {
+      playSound();
+      fireToast(s);
+      fireSystemNotif(s, options);
+    }
+
+    function maybePriorityReminder(s, t, now, waiting) {
+      if (reminderMode === "off" || !waiting || !s.alive
+          || !reminderEligible(s) || t.acknowledgedIdle) return;
+      if (!t.lastPriorityReminderAt) {
+        t.lastPriorityReminderAt = now;
+        return;
+      }
+      if (now - t.lastPriorityReminderAt < PRIORITY_REMINDER_MS) return;
+      t.lastPriorityReminderAt = now;
+      notify(s, { reminder: true });
     }
 
     // Called from refreshList on every poll with the fresh sessions[].
@@ -4688,6 +4912,12 @@
       const now = Date.now();
       const seen = new Set();
       for (const s of list) {
+        const canonical = canonicalSession(s);
+        if (canonical && canonical.run_id !== s.run_id) {
+          clearTimeout(tracks.get(s.run_id)?.pendingTimer);
+          tracks.delete(s.run_id);
+          continue;
+        }
         seen.add(s.run_id);
         const alive = !!s.alive;
         const busy = !!s.busy && alive;
@@ -4695,47 +4925,108 @@
         if (!t) {
           // First time we've seen this session. Treat as "just notified"
           // so a page reload (or a session that was already idle when
-          // discovered) doesn't immediately fire a toast — the user has
-          // to wait through one cooldown OR see a busy→idle transition
-          // before the first ping. New sessions spawned mid-life still
-          // hit this branch but they almost always start busy anyway.
+          // discovered) doesn't immediately fire a toast. It must work and
+          // then return to waiting before the first default notification.
+          const native = s.native_activity || {};
           t = { wasBusy: busy,
                 idleSince: busy ? 0 : now,
-                lastNotifAt: now };
+                notifiedForIdle: !busy,
+                acknowledgedIdle: !busy,
+                lastPriorityReminderAt: now,
+                createdAt: now,
+                nativeState: String(native.state || ""),
+                nativeVersion: native.state
+                  ? `${native.state}:${native.updated_at || 0}` : "",
+                pendingTimer: null };
           tracks.set(s.run_id, t);
+          continue;
+        }
+
+        const native = s.native_activity || {};
+        const nativeState = String(native.state || "");
+        if (nativeState) {
+          const version = `${nativeState}:${native.updated_at || 0}`;
+          if (version !== t.nativeVersion) {
+            const previousState = t.nativeState;
+            t.nativeState = nativeState;
+            t.nativeVersion = version;
+            t.wasBusy = nativeState === "working"
+              || nativeState === "background_working";
+            const waiting = nativeState === "waiting_user"
+              || nativeState === "needs_input"
+              || nativeState === "ended";
+            if (t.wasBusy) {
+              t.notifiedForIdle = false;
+              t.acknowledgedIdle = false;
+              t.lastPriorityReminderAt = 0;
+            } else if (waiting && previousState !== nativeState) {
+              t.idleSince = now;
+              t.notifiedForIdle = false;
+              t.acknowledgedIdle = false;
+              t.lastPriorityReminderAt = now;
+            }
+            const eventAt = Number(native.updated_at || 0) * 1000;
+            const isNewEvent = eventAt >= t.createdAt - 1000;
+            if (enabled && waiting && isNewEvent
+                && previousState !== nativeState) {
+              clearTimeout(t.pendingTimer);
+              // Coalesce Stop + idle-prompt style event pairs without adding
+              // perceptible delay to a real lifecycle transition.
+              t.pendingTimer = setTimeout(() => {
+                const fresh = sessions.find(x => x.run_id === s.run_id);
+                const freshState = fresh?.native_activity?.state || "";
+                if (freshState === nativeState && enabled) {
+                  t.notifiedForIdle = true;
+                  notify(fresh);
+                }
+              }, 200);
+            }
+          }
+          const nativeWaiting = nativeState === "waiting_user"
+            || nativeState === "needs_input" || nativeState === "ended";
+          maybePriorityReminder(s, t, now, nativeWaiting);
           continue;
         }
 
         if (busy) {
           t.wasBusy = true;
           t.idleSince = 0;
+          t.notifiedForIdle = false;
+          t.acknowledgedIdle = false;
+          t.lastPriorityReminderAt = 0;
           continue;
         }
 
         // Idle path. Record the transition timestamp on the first idle
         // tick so we can measure duration; subsequent idle ticks keep
         // the same idleSince and accumulate.
-        if (t.wasBusy) t.idleSince = now;
+        if (t.wasBusy) {
+          t.idleSince = now;
+          t.notifiedForIdle = false;
+          t.acknowledgedIdle = false;
+          t.lastPriorityReminderAt = now;
+        }
         t.wasBusy = false;
 
         if (!alive) continue;          // dead session, not waiting
-        if (!enabled) continue;        // user opted out
-        if (!t.idleSince) continue;    // shouldn't happen, defensive
-        if (now - t.idleSince < IDLE_TRIGGER_MS) continue;
-        if (now - t.lastNotifAt < RENOTIFY_COOLDOWN_MS) continue;
-
-        t.lastNotifAt = now;
-        fireToast(s);
-        fireSystemNotif(s);
+        if (enabled && t.idleSince && !t.notifiedForIdle
+            && now - t.idleSince >= IDLE_TRIGGER_MS) {
+          t.notifiedForIdle = true;
+          notify(s);
+        }
+        maybePriorityReminder(s, t, now, true);
       }
       // Prune tracks for sessions that no longer exist, so the dict
       // doesn't grow unbounded across a long uptime.
       for (const id of tracks.keys()) {
-        if (!seen.has(id)) tracks.delete(id);
+        if (!seen.has(id)) {
+          clearTimeout(tracks.get(id)?.pendingTimer);
+          tracks.delete(id);
+        }
       }
     }
 
-    return { attach, check, toggle,
+    return { attach, check, toggle, acknowledge,
              get enabled() { return enabled; } };
   })();
 
@@ -4842,6 +5133,65 @@
     return refreshListInFlight;
   }
 
+  let nativeActivityRefreshInFlight = null;
+  async function refreshNativeActivityOnce() {
+    if (!sessionSnapshotReady || !sessions.length) return;
+    let data;
+    try {
+      data = await api("/api/native-activity");
+    } catch (_) {
+      // Full session refresh remains the fallback. A transient lightweight
+      // poll failure should not paint the whole dashboard disconnected.
+      return;
+    }
+    const updates = new Map(
+      (data.sessions || []).map(row => [row.run_id, row.native_activity || {}])
+    );
+    let changed = false;
+    for (const s of sessions) {
+      const native = updates.get(s.run_id);
+      if (!native || !native.state) continue;
+      const before = s.native_activity
+        ? `${s.native_activity.state}:${s.native_activity.updated_at || 0}` : "";
+      const after = `${native.state}:${native.updated_at || 0}`;
+      s.native_activity = native;
+      if (native.state === "working" || native.state === "background_working") {
+        s.busy = true;
+      } else if (["waiting_user", "needs_input", "ended"].includes(native.state)) {
+        s.busy = false;
+        s.screen_busy = false;
+      }
+      if (s.mission_control) {
+        s.mission_control.state = native.state === "needs_input"
+          ? "needs_input"
+          : (native.state === "working" || native.state === "background_working")
+            ? "working" : "waiting";
+        s.mission_control.activity_mode = s.busy ? "busy" : "idle";
+        s.mission_control.activity_age_s = native.age_s || 0;
+        s.mission_control.activity_source = native.source || "";
+      }
+      if (before !== after) {
+        changed = true;
+        const ctrl = paneCtrls.get(s.run_id);
+        if (ctrl) updatePaneHeader(ctrl, s);
+      }
+    }
+    idleNotif.check(sessions);
+    if (changed) {
+      renderList();
+      updateMissionControlButton();
+      if (!$('mission-modal').hidden) renderMissionControl();
+    }
+  }
+
+  function refreshNativeActivity() {
+    if (nativeActivityRefreshInFlight) return nativeActivityRefreshInFlight;
+    nativeActivityRefreshInFlight = refreshNativeActivityOnce().finally(() => {
+      nativeActivityRefreshInFlight = null;
+    });
+    return nativeActivityRefreshInFlight;
+  }
+
   function dotClass(s) {
     if (s.kind === "legacy") return "archived";
     if (!s.alive) return "dead";
@@ -4875,8 +5225,7 @@
     applyPaneTerminalTheme(ctrl, s);
 
     const disable = !s.alive;
-    [".btn-send", ".btn-progress", ".btn-monitor", ".btn-link-folder",
-     ".btn-kill"].forEach(sel => {
+    [".btn-send", ".btn-progress", ".btn-monitor", ".btn-link-folder"].forEach(sel => {
       const el = card.querySelector(sel);
       if (el) el.disabled = disable;
     });
@@ -5079,6 +5428,7 @@
   }
 
   function handleSessionClick(ev, id) {
+    idleNotif.acknowledge(id);
     // ⌘/Ctrl+Click: toggle this session in/out of pinned slots
     if (ev.metaKey || ev.ctrlKey) {
       const idx = slotOf(id);
@@ -5127,7 +5477,7 @@
   function panelStateOptionsHtml(selected) {
     const value = String(selected || "").toLowerCase();
     return PANEL_STATE_OPTIONS.map(([state, label]) =>
-      `<option value="${escapeHtml(state)}" ${state === value ? "selected" : ""}>${escapeHtml(label)}</option>`
+      `<option value="${escapeHtml(state)}" title="${escapeHtml(label)}" ${state === value ? "selected" : ""}>${escapeHtml(PANE_STATE_SHORT_LABELS[state] || label)}</option>`
     ).join("");
   }
 
@@ -5164,6 +5514,13 @@
     const value = String(state || "").toLowerCase();
     const hit = PANEL_STATE_OPTIONS.find(([key]) => key === value);
     return hit ? hit[1] : "";
+  }
+
+  function panelStateControlTitle(state) {
+    const value = String(state || "").toLowerCase();
+    const full = panelStateLabel(value) || "Flag";
+    const short = PANE_STATE_SHORT_LABELS[value] || "F";
+    return `Status: ${full} (${short}) · click to change`;
   }
 
   function paneIdleToneClass(state) {
@@ -5240,6 +5597,7 @@
     const value = String(state || "").toLowerCase();
     sel.value = value;
     sel.dataset.state = value;
+    sel.title = panelStateControlTitle(value);
   }
 
   function updateTerminalThemeSelect(ctrl, theme) {
@@ -5698,7 +6056,8 @@
 
   function closePaneZoom() {
     if (!paneZoomState) return;
-    const card = paneZoomState.card;
+    const state = paneZoomState;
+    const card = state.card;
     paneZoomState = null;
     if (card) {
       card.classList.remove("zoomed-pane");
@@ -5706,16 +6065,17 @@
         .forEach(name => card.style.removeProperty(name));
     }
     paneZoomBackdrop.hidden = true;
+    if (typeof state.onClose === "function") state.onClose();
   }
 
-  function openPaneZoom(card) {
+  function openPaneZoom(card, options = {}) {
     if (!card || card.classList.contains("empty-slot")) return;
     if (paneZoomState && paneZoomState.card === card) {
       closePaneZoom();
       return;
     }
     closePaneZoom();
-    paneZoomState = { card };
+    paneZoomState = { card, onClose: options.onClose };
     applyPaneZoomLayout();
     paneZoomBackdrop.hidden = false;
     card.classList.add("zoomed-pane");
@@ -5784,13 +6144,12 @@
           <select class="pane-theme-select" title="Terminal theme" data-theme="${escapeHtml(terminalThemeValue(s.terminal_theme))}">
             ${terminalThemeOptionsHtml(s.terminal_theme)}
           </select>
-          <select class="pane-state-select" title="Panel importance / state" data-state="${escapeHtml(s.panel_state || "")}">
+          <select class="pane-state-select" title="${escapeHtml(panelStateControlTitle(s.panel_state))}" data-state="${escapeHtml(s.panel_state || "")}">
             ${panelStateOptionsHtml(s.panel_state)}
           </select>
           <button class="btn-zoom" title="Open a larger pane view">⛶</button>
           <button class="btn-reload" title="Reconnect this pane (if display is glitchy)">↻</button>
           <button class="btn-folders" title="Linked task files and folders">files</button>
-          <button class="btn-kill danger" title="Stop agent and save resume metadata">stop</button>
           <button class="btn-unpin" title="Close this pane">×</button>
         </div>
       </div>
@@ -5845,7 +6204,6 @@
     const btnZoom = card.querySelector(".btn-zoom");
     const btnReload = card.querySelector(".btn-reload");
     const btnFolders = card.querySelector(".btn-folders");
-    const btnKill = card.querySelector(".btn-kill");
     const btnUnpin = card.querySelector(".btn-unpin");
 
     const ctrl = {
@@ -5867,7 +6225,6 @@
     updateProjectSyncButton(
       btnSyncProject, syncStatus.sync_job || { state: "idle" }
     );
-    btnKill.disabled = disable;
     stateSelect.disabled = !["task", "run"].includes(s.kind);
     themeSelect.disabled = !["task", "run"].includes(s.kind);
     const linkedCount = (s.linked_folders || []).length;
@@ -6031,8 +6388,6 @@
       }
     });
     btnFolders.addEventListener("click", () => openFolderViewer(runId));
-    btnKill.addEventListener("click", () => stopSession(runId));
-
     btnUnpin.addEventListener("click", () => {
       if (paneZoomState && paneZoomState.card === card) {
         closePaneZoom();
@@ -6371,7 +6726,9 @@
     });
   }
 
-  async function attachPaneView(ctrl, { priority = false } = {}) {
+  async function attachPaneView(
+    ctrl, { priority = false, forceTty = false } = {},
+  ) {
     const { runId, paneEl } = ctrl;
     const s = currentSessionForPane(ctrl);
     ctrl.session = Object.assign({}, ctrl.session || {}, s);
@@ -6387,7 +6744,7 @@
     // be toggled off via the header button to force plain-SSE for all
     // panes; `health.ttyd === false` means the dashboard was launched with
     // --no-ttyd (or ttyd isn't on PATH) and the iframe path isn't available.
-    if (ttyMode && health.ttyd && s.alive) {
+    if ((ttyMode || forceTty) && health.ttyd && s.alive) {
       try {
         const resp = await scheduleTtyAttach(
           () => api(`/api/sessions/${encodeURIComponent(runId)}/tty`),
@@ -6570,6 +6927,7 @@
     const prev = s ? String(s.panel_state || "").toLowerCase() : "";
     if (selectEl) {
       selectEl.dataset.state = value;
+      selectEl.title = panelStateControlTitle(value);
       selectEl.disabled = true;
     }
     try {
@@ -6589,6 +6947,7 @@
       if (selectEl) {
         selectEl.value = prev;
         selectEl.dataset.state = prev;
+        selectEl.title = panelStateControlTitle(prev);
       }
       alert("panel state failed: " + e.message);
     } finally {
@@ -6860,7 +7219,13 @@
     }
   });
   $("btn-refresh").addEventListener("click", refreshList);
-  idleNotif.attach($("btn-notif"));
+  idleNotif.attach($("btn-notif"), $("priority-reminder-select"));
+  // Looking at or interacting with a pane acknowledges its current waiting
+  // episode, so opt-in P0/P1 reminders stop until that agent works again.
+  $("grid").addEventListener("pointerdown", (event) => {
+    const card = event.target.closest?.(".pane-card[data-run-id]");
+    if (card?.dataset.runId) idleNotif.acknowledge(card.dataset.runId);
+  }, { capture: true });
 
   // Sidebar view selector buttons (Active / Ended / Projects).
   document.querySelectorAll("#sess-filter button[data-view]").forEach(btn => {
@@ -10291,6 +10656,8 @@
     renderList();
     renderGrid();
     setInterval(refreshList, 5000);
+    refreshNativeActivity();
+    setInterval(refreshNativeActivity, 1000);
     setInterval(updateAllPaneIdleBadges, 1000);
     setInterval(prunePaneCache, 60000);
   })();
