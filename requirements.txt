@@ -5,6 +5,9 @@ fastapi>=0.110
 # Starlette 1.x currently deprecates the httpx-backed TestClient used by
 # FastAPI; stay on the tested 0.x line until that transition is complete.
 starlette>=0.46,<1
+# Starlette 0.x still imports an alias that AnyIO 4.15 deprecated. Keep CI's
+# warnings-as-errors contract stable until Starlette removes that import.
+anyio>=4,<4.15
 uvicorn>=0.27
 # ttyd reverse proxy so the iframe stays same-origin with the dashboard
 httpx>=0.27
