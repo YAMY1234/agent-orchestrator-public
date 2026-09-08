@@ -33,6 +33,7 @@ import copy
 import hashlib
 import hmac
 import html as html_lib
+import inspect
 import io
 import json
 import mimetypes
@@ -55,16 +56,25 @@ from datetime import datetime, timedelta
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from .conversation_metrics import TranscriptMetricsCache
 from .dashboard_network import build_access_url, list_local_ipv4, pick_best_ip
 from .json_store import edit_json, write_json
 from .local_settings import dashboard_token, require_dashboard_auth
 from .native_activity import NativeActivityService
+from .remote_nodes import (
+    RemoteNodeReconnectManager,
+    RemoteNodeRegistry,
+    load_settings as load_remote_node_settings,
+    parse_qualified_run_id,
+    qualify_run_id,
+    remote_api_path,
+)
 from .sync_status import SyncStatusService, load_settings as load_sync_settings
 from .sync_transfer import TransferCancelled
 from .terminal_theme import (
+    TtydOutputThemeMapper as _TtydOutputThemeMapper,
     normalize_terminal_theme as _normalize_terminal_theme,
     patch_ttyd_index_interactions as _patch_ttyd_index_interactions,
     patch_ttyd_index_theme as _patch_ttyd_index_theme,
@@ -228,7 +238,7 @@ def _auto_title_for(agent: str, cwd: str, started_at: str,
 # tail of pane text, md5-hash it, and compare to the previous tick. When the
 # hash changes, we bump `last_change_ts`. A session is considered "busy" while
 # `now - last_change_ts < _BUSY_IDLE_SECONDS`, or while the latest visible
-# status says shell/background-terminal work is still running.
+# status says the agent itself is waiting for background work to finish.
 # For panel sorting we keep a separate sustained-activity streak: one-off
 # changes are ignored until content keeps changing for
 # _PANEL_SORT_ACTIVE_SECONDS.
@@ -281,9 +291,11 @@ _BACKGROUND_STATUS_LINE_PATTERNS = (
     re.compile(_BACKGROUND_WAITING_STATUS_RE),
 )
 _BACKGROUND_ACTIVE_PATTERNS = (
+    re.compile(_BACKGROUND_WAITING_STATUS_RE),
+)
+_DETACHED_SHELL_PATTERNS = (
     re.compile(_BACKGROUND_TIMED_STATUS_RE + r".{0,180}\b(?i:(?:\d+\s+)?shells?\s+still\s+running)\b"),
     re.compile(_BACKGROUND_TIMED_STATUS_RE + r".{0,180}\b(?i:(?:\d+\s+)?background\s+terminals?\s+(?:still\s+)?running)\b"),
-    re.compile(_BACKGROUND_WAITING_STATUS_RE),
 )
 _BACKGROUND_STATUS_DURATION_EXTRACT_RE = re.compile(
     r"\bfor\s+((?:\d+(?:\.\d+)?\s*(?:ms|s|m|h|d)(?:\s+|$)){1,4})",
@@ -315,13 +327,51 @@ def _background_reason_elapsed_seconds(reason: str) -> float | None:
     return _parse_compact_duration_seconds(m.group(1))
 
 
-def _terminal_theme_for_tmux_session(outputs_dir: Path, session: str) -> str:
-    if not session:
-        return ""
-    for row in _discover_runs(outputs_dir):
-        if row.get("tmux_session") == session:
-            return _normalize_terminal_theme(str(row.get("terminal_theme") or ""))
-    return ""
+def _terminal_themes_by_tmux_session(outputs_dir: Path) -> dict[str, str]:
+    """Read persisted terminal themes without probing any live tmux panes.
+
+    Existing ttyd iframes reconnect directly after a Dashboard restart. They
+    can therefore reach the reverse-proxy before the browser calls the
+    run-id-based ``/api/.../tty`` endpoint. Keep a cheap startup index so that
+    direct HTTP or WebSocket reconnects still launch ttyd with the session's
+    saved palette instead of briefly falling back to ANSI black. Limit reads
+    to sessions in the active snapshot; walking every historical output
+    directory makes Dashboard startup noticeably slower on large workspaces.
+    """
+    themes: dict[str, str] = {}
+    snapshot = _safe_read_json(outputs_dir / ".active_sessions_snapshot.json") or {}
+    entries = snapshot.get("sessions")
+    if not isinstance(entries, list):
+        return themes
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        session = str(entry.get("tmux_session") or "")
+        if not session:
+            continue
+        theme = _normalize_terminal_theme(
+            str(entry.get("terminal_theme") or "")
+        )
+
+        run_name = str(entry.get("run_name") or "")
+        if run_name and Path(run_name).name == run_name:
+            run_dir = outputs_dir / run_name
+            if entry.get("kind") == "task":
+                state_data = _safe_read_json(run_dir / "state.json") or {}
+                task_data = state_data.get(str(entry.get("task") or ""))
+                if isinstance(task_data, dict):
+                    theme = _normalize_terminal_theme(
+                        str(task_data.get("terminal_theme") or "")
+                    )
+            elif entry.get("kind") == "run":
+                session_data = _safe_read_json(run_dir / "session.json") or {}
+                if session_data:
+                    theme = _normalize_terminal_theme(
+                        str(session_data.get("terminal_theme") or "")
+                    )
+        themes[session] = theme
+    return themes
 
 
 # ---------------------------------------------------------------------------
@@ -2448,6 +2498,20 @@ def _candidate_score(candidate_start: float, started_epoch: Optional[float],
     return (1 if cwd_match else 0, mtime, candidate_start)
 
 
+def _cwd_paths_match(left: str, right: str) -> bool:
+    """Treat symlink aliases for the same working directory as equivalent."""
+    if not left or not right:
+        return left == right
+    if left == right:
+        return True
+    try:
+        return os.path.realpath(os.path.expanduser(left)) == os.path.realpath(
+            os.path.expanduser(right)
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _find_codex_resume(cwd: str, started_at: str) -> dict[str, str]:
     root = Path.home() / ".codex" / "sessions"
     if not root.exists():
@@ -2474,12 +2538,13 @@ def _find_codex_resume(cwd: str, started_at: str) -> dict[str, str]:
                 _parse_iso_epoch(payload.get("timestamp"))
                 or _path_birth_or_mtime(path)
             )
-            if not resume_id or (cwd and pcwd != cwd):
+            cwd_match = _cwd_paths_match(cwd, pcwd)
+            if not resume_id or (cwd and not cwd_match):
                 continue
             if not _candidate_ok(candidate_start, started_epoch):
                 continue
             score = _candidate_score(candidate_start, started_epoch,
-                                     path.stat().st_mtime, pcwd == cwd)
+                                     path.stat().st_mtime, cwd_match)
             if best is None or score > best:
                 best = score
                 best_meta = _build_resume_meta("codex", str(resume_id),
@@ -2520,7 +2585,11 @@ def _find_codex_resume_near_start(
                 _parse_iso_epoch(payload.get("timestamp"))
                 or _path_birth_or_mtime(path)
             )
-            if not resume_id or (cwd and pcwd != cwd) or not candidate_start:
+            if (
+                not resume_id
+                or (cwd and not _cwd_paths_match(cwd, pcwd))
+                or not candidate_start
+            ):
                 continue
             if candidate_start < started_epoch - before_s:
                 continue
@@ -3652,10 +3721,12 @@ def _graceful_stop_agent(session: str, agent: str,
 
 
 def _detect_background_active(text: str) -> tuple[bool, str]:
-    """Detect agent status lines that mean work is still running off-screen.
+    """Detect status lines where the agent is waiting on off-screen work.
 
     Match only Codex/agent status rows, not arbitrary assistant prose that may
-    mention phrases such as "2 shells still running" while explaining behavior.
+    mention background work.  A completed turn may leave a detached shell
+    running, but that does not mean the agent itself is working and must not
+    drive the spinner.
     """
     for line in reversed(text.splitlines()[-24:]):
         clean = line.strip()
@@ -3665,6 +3736,21 @@ def _detect_background_active(text: str) -> tuple[bool, str]:
             m = pattern.search(clean)
             if m:
                 return True, m.group(0)
+        if any(pattern.search(clean) for pattern in _BACKGROUND_STATUS_LINE_PATTERNS):
+            return False, ""
+    return False, ""
+
+
+def _detect_detached_shell(text: str) -> tuple[bool, str]:
+    """Report a leftover background shell without calling the agent active."""
+    for line in reversed(text.splitlines()[-24:]):
+        clean = line.strip()
+        if not clean:
+            continue
+        for pattern in _DETACHED_SHELL_PATTERNS:
+            match = pattern.search(clean)
+            if match:
+                return True, match.group(0)
         if any(pattern.search(clean) for pattern in _BACKGROUND_STATUS_LINE_PATTERNS):
             return False, ""
     return False, ""
@@ -3680,7 +3766,7 @@ _MISSION_TEST_PROGRESS_RE = re.compile(
     re.I,
 )
 _MISSION_GOAL_RE = re.compile(
-    r"\bGoal\s+(?P<state>achieved|blocked)\b|\bPursuing\s+goal\b",
+    r"\bGoal\s+(?P<state>achieved|blocked|active)\b|\bPursuing\s+goal\b",
     re.I,
 )
 _MISSION_NEEDS_INPUT_RE = re.compile(
@@ -3794,7 +3880,7 @@ def _mission_control_payload(
         state = "blocked"
     elif progress.get("needs_input") and not busy:
         state = "needs_input"
-    elif busy:
+    elif busy or goal_state == "pursuing":
         state = "working"
     # "Goal achieved" is an agent milestone, not proof that the live Session
     # itself is finished. Only the user's explicit Done panel state is allowed
@@ -4494,8 +4580,8 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
     """Capture one visible pane snapshot and update busy-tracking state.
 
     `screen_busy` is true when visible content changed within the last ~2s.
-    `background_active` is true when the agent status line says shell work is
-    still running even if the screen is currently quiet.
+    `background_active` is true only when the agent status line says the agent
+    is waiting for shell work to finish even if the screen is currently quiet.
 
     Empty `session` (e.g. legacy run with no tmux) returns idle values without
     doing work.
@@ -4507,6 +4593,9 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "background_active_reason": "",
         "background_active_started_ts": 0.0,
         "background_active_age_s": None,
+        "detached_shell_running": False,
+        "detached_shell_reason": "",
+        "agent_exited": False,
         "terminal_progress": _extract_terminal_progress(""),
     }
     if not session:
@@ -4544,6 +4633,16 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
     last_change = _SESSION_LAST_CHANGE.get(session, 0.0)
     screen_busy = (now - last_change) < _BUSY_IDLE_SECONDS
     background_active, background_reason = _detect_background_active(text)
+    detached_shell_running, detached_shell_reason = _detect_detached_shell(text)
+    # The launcher deliberately leaves its tmux wrapper at `read` after the
+    # agent process exits so the final output remains inspectable.  A live
+    # tmux session therefore does not necessarily mean a live agent.  Match
+    # the launcher's marker as a complete recent line to avoid treating prose
+    # that merely mentions the marker as an exited process.
+    recent_nonempty_lines = [
+        line.strip() for line in text.splitlines() if line.strip()
+    ][-24:]
+    agent_exited = _AGENT_EXIT_MARKER in recent_nonempty_lines
     if background_active:
         elapsed_s = _background_reason_elapsed_seconds(background_reason)
         if elapsed_s is not None:
@@ -4561,6 +4660,9 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "background_active_reason": background_reason,
         "background_active_started_ts": background_started_ts,
         "background_active_age_s": round(now - background_started_ts, 1) if background_started_ts else None,
+        "detached_shell_running": detached_shell_running,
+        "detached_shell_reason": detached_shell_reason,
+        "agent_exited": agent_exited,
         "terminal_progress": _extract_terminal_progress(text),
     }
 
@@ -5743,7 +5845,7 @@ def _discover_runs_unlocked(
         })
 
     # Tag every alive run with `busy` based on recent pane-content changes
-    # OR an agent status line that says background shell work is still running.
+    # OR a status line that says the agent is waiting for background shell work.
     # This is what lets sidebar dots go green even for sessions that
     # aren't currently attached to an open pane (and therefore have no
     # front-end pane available to mirror activity from).
@@ -5760,6 +5862,9 @@ def _discover_runs_unlocked(
             r["background_active_started_ts"] = bg_started_ts
             r["background_active_started_at"] = _local_iso(bg_started_ts)
             r["background_active_age_s"] = activity.get("background_active_age_s")
+            r["detached_shell_running"] = bool(activity.get("detached_shell_running"))
+            r["detached_shell_reason"] = activity.get("detached_shell_reason", "")
+            r["agent_exited"] = bool(activity.get("agent_exited"))
             now = time.time()
             changed_ts = _SESSION_LAST_CHANGE.get(sess, 0.0)
             streak_ts = _SESSION_ACTIVITY_STREAK_START.get(sess, 0.0)
@@ -5801,6 +5906,9 @@ def _discover_runs_unlocked(
             r["background_active_started_ts"] = 0.0
             r["background_active_started_at"] = ""
             r["background_active_age_s"] = None
+            r["detached_shell_running"] = False
+            r["detached_shell_reason"] = ""
+            r["agent_exited"] = False
             r["activity_last_change_at"] = ""
             r["activity_last_change_age_s"] = None
             r["activity_streak_started_at"] = ""
@@ -5985,7 +6093,9 @@ def _capture_native_resume_for_run(
     *,
     preallocated_meta: Optional[dict[str, str]] = None,
     preallocation_error: str = "",
-    attempts: tuple[float, ...] = (0.7, 1.5, 3.0, 6.0, 10.0),
+    attempts: tuple[float, ...] = (
+        0.7, 1.5, 3.0, 6.0, 10.0, 20.0, 40.0, 60.0,
+    ),
 ) -> None:
     last_error = preallocation_error
     if preallocation_error:
@@ -6472,7 +6582,13 @@ SHADOW_SUFFIX = "-web"
 
 
 def _enable_tmux_hyperlink_passthrough() -> bool:
-    """Advertise OSC 8 support for ttyd's xterm-compatible tmux clients."""
+    """Advertise OSC 8 support for ttyd's xterm-compatible tmux clients.
+
+    tmux can retain hyperlink metadata in pane history while omitting it when
+    drawing to a client whose terminal features do not include ``hyperlinks``.
+    ttyd's xterm.js supports OSC 8, so add the matching feature once before a
+    ttyd client attaches. Existing user entries are preserved.
+    """
     try:
         current = subprocess.run(
             ["tmux", "show-options", "-gv", "terminal-features"],
@@ -6556,36 +6672,41 @@ def ensure_shadow_session(session: str, cols: int = 0,
                 return None
         except (subprocess.SubprocessError, FileNotFoundError):
             return None
-    # Re-apply every call (idempotent) so policy changes take effect on
-    # already-running shadows without requiring manual kill-session.
-    # `mouse` is session-scoped; changing it on the shadow does NOT affect
-    # the iTerm-attached original session.
-    for opt, val in (
-        ("mouse", "on"),
-        ("history-limit", "50000"),
-        ("status", "off"),
-    ):
-        subprocess.run(
-            ["tmux", "set-option", "-t", shadow, opt, val],
-            capture_output=True, text=True, timeout=5,
-        )
+    # Existing shadows are already configured. Re-running six synchronous
+    # tmux commands for every iframe asset/reconnect can create a retry storm
+    # when the shared tmux server is under load: each command waits for its
+    # timeout while holding TtydManager's lock, then the browser reconnects
+    # and queues the same work again. Configure only a newly-created shadow,
+    # and batch the options into one tmux request.
+    if not is_new:
+        return shadow
+
+    configure = [
+        "tmux",
+        "set-option", "-t", shadow, "mouse", "on", ";",
+        "set-option", "-t", shadow, "history-limit", "50000", ";",
+        "set-option", "-t", shadow, "status", "off", ";",
+    ]
     if owner:
-        subprocess.run(
-            ["tmux", "set-option", "-t", shadow,
-             "@orch-ttyd-owner", owner],
-            capture_output=True, text=True, timeout=5,
-        )
+        configure.extend([
+            "set-option", "-t", shadow, "@orch-ttyd-owner", owner, ";",
+        ])
     # NOTE: window-size is a *window* option and grouped sessions share
     # their windows, so setting it on the shadow also affects how the
     # iTerm-side original draws. See docstring caveat for alternatives.
-    for opt, val in (
-        ("window-size", "latest"),
-        ("aggressive-resize", "on"),
-    ):
+    configure.extend([
+        "set-option", "-w", "-t", shadow, "window-size", "latest", ";",
+        "set-option", "-w", "-t", shadow, "aggressive-resize", "on",
+    ])
+    try:
         subprocess.run(
-            ["tmux", "set-option", "-w", "-t", shadow, opt, val],
-            capture_output=True, text=True, timeout=5,
+            configure, capture_output=True, text=True, timeout=5,
         )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        # These settings are conveniences, not a prerequisite for attaching.
+        # Let ttyd attempt the attach without turning transient tmux pressure
+        # into an uncaught ASGI error and a browser reconnect loop.
+        pass
     return shadow
 
 
@@ -6618,11 +6739,17 @@ def kill_shadow_session(session: str, *, owner: str = "") -> bool:
 
 class TtydManager:
     def __init__(self, enabled: bool, base_port: int = 7800,
-                 reserved_ports: Optional[set[int]] = None):
+                 reserved_ports: Optional[set[int]] = None,
+                 session_themes: Optional[dict[str, str]] = None):
         self.enabled = enabled
         self.base_port = base_port
         self.reserved_ports = set(reserved_ports or set())
         self._procs: dict[str, tuple[subprocess.Popen, int, str]] = {}
+        self._session_themes = {
+            str(session): _normalize_terminal_theme(str(theme or ""))
+            for session, theme in (session_themes or {}).items()
+            if session
+        }
         self._next_port = base_port
         self._owner = f"{os.getpid()}-{uuid.uuid4().hex}"
         self._tmux_hyperlinks_configured: Optional[bool] = None
@@ -6747,6 +6874,7 @@ class TtydManager:
                 _enable_tmux_hyperlink_passthrough()
             )
         theme = _normalize_terminal_theme(theme)
+        self._session_themes[session] = theme
         existing = self._procs.get(session)
         if existing:
             proc, port, existing_theme = existing
@@ -6815,13 +6943,13 @@ class TtydManager:
         return None
 
     def port_for(self, session: str) -> Optional[int]:
-        """Return the port of a live ttyd for `session` (or start a default one).
+        """Return the port of a live ttyd for `session` without scanning runs.
 
         `/api/sessions/{run_id}/tty` is responsible for applying any
-        per-session theme before the iframe is created. The reverse-proxy
-        routes only know the tmux session name, so they must reuse an existing
-        ttyd instead of calling `ensure(..., theme="")` and accidentally
-        replacing a themed terminal with the default one.
+        per-session theme before the iframe is created. On Dashboard restart,
+        an existing iframe can reconnect directly through a reverse-proxy
+        route instead; in that case the persisted startup index supplies the
+        same theme before ttyd is launched.
         """
         with self._lock:
             existing = self._procs.get(session)
@@ -6834,7 +6962,9 @@ class TtydManager:
                     self._stop_proc(proc)
                 self._procs.pop(session, None)
                 return self.ensure(session, theme=theme)
-            return self.ensure(session)
+            return self.ensure(
+                session, theme=self._session_themes.get(session, ""),
+            )
 
     def theme_for(self, session: str) -> str:
         """Return the live ttyd theme for `session` without scanning runs.
@@ -6848,7 +6978,7 @@ class TtydManager:
         with self._lock:
             existing = self._procs.get(session)
             if not existing:
-                return ""
+                return self._session_themes.get(session, "")
             proc, _port, theme = existing
             if proc.poll() is not None:
                 self._procs.pop(session, None)
@@ -7002,17 +7132,31 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                bind_host: str = "127.0.0.1", port: int = 7860,
                scheme: str = "http",
                publish_icloud: bool = False,
-               projects_dir: Optional[Path] = None) -> FastAPI:
+               projects_dir: Optional[Path] = None,
+               remote_nodes_enabled: bool = True) -> FastAPI:
     # `projects/` is the archival tree produced by `orch organize`. It lives
     # next to `outputs/` by default. We keep the handle around so projects
     # endpoints can read it (no writes happen here — writes are done by
     # organize/prune on disk).
     projects_dir = _configured_projects_dir(outputs_dir, projects_dir)
-    ttyd = TtydManager(enabled=ttyd_enabled, reserved_ports={port})
+    ttyd = TtydManager(
+        enabled=ttyd_enabled,
+        reserved_ports={port},
+        session_themes=_terminal_themes_by_tmux_session(outputs_dir),
+    )
     dashboard_config_path = Path(
         os.environ.get("ORCH_DASHBOARD_CONFIG", str(DEFAULT_DASHBOARD_CONFIG))
     ).expanduser()
     sync_settings = load_sync_settings(dashboard_config_path)
+    remote_node_settings = (
+        load_remote_node_settings(dashboard_config_path)
+        if remote_nodes_enabled else ()
+    )
+    remote_nodes = RemoteNodeRegistry(remote_node_settings)
+    remote_node_reconnect = RemoteNodeReconnectManager(
+        remote_node_settings,
+        refresh_callback=remote_nodes.request_refresh,
+    )
     native_activity = NativeActivityService()
 
     def scan_session_snapshot() -> list[dict[str, Any]]:
@@ -7055,12 +7199,17 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         completion_callback=publish_session_handoff,
     )
     dashboard_instance_id = uuid.uuid4().hex
+    remote_http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=3.0, read=30.0, write=30.0, pool=3.0),
+        limits=httpx.Limits(max_connections=64, max_keepalive_connections=24),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         native_activity.start()
         sync_status.start()
         session_snapshots.start()
+        remote_nodes.start()
         if (app.state.active_snapshot_autosave_enabled
                 and app.state.active_snapshot_autosave_thread is None):
             stop_event = threading.Event()
@@ -7114,6 +7263,9 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             native_activity.stop(timeout=2)
             _flush_activity_timeline(outputs_dir)
             sync_status.stop()
+            remote_node_reconnect.stop()
+            remote_nodes.stop()
+            await remote_http_client.aclose()
 
     app = FastAPI(
         title="Agent Orchestrator Dashboard",
@@ -7132,6 +7284,8 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     app.state.session_snapshots = session_snapshots
     app.state.native_activity = native_activity
     app.state.sync_status = sync_status
+    app.state.remote_nodes = remote_nodes
+    app.state.remote_node_reconnect = remote_node_reconnect
 
     # Optional background publisher: write current URL to iCloud Drive so a
     # phone can pick up the latest address without guessing. Writes on IP
@@ -7181,6 +7335,145 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         if not _token_matches(authorization, expected):
             raise HTTPException(status_code=401, detail="invalid token")
 
+    def _remote_session_target(path: str):
+        prefix = "/api/sessions/"
+        if not path.startswith(prefix):
+            return None
+        remainder = path[len(prefix):]
+        qualified, separator, suffix = remainder.partition("/")
+        parsed = parse_qualified_run_id(qualified)
+        if not parsed:
+            return None
+        node_id, remote_run_id = parsed
+        node = remote_nodes.get(node_id)
+        if node is None:
+            return None
+        return node, remote_api_path(
+            node_id, remote_run_id, suffix if separator else ""
+        )
+
+    def _qualify_remote_payload(value: Any, node_id: str,
+                                parent_key: str = "") -> Any:
+        """Rewrite remote run identifiers while preserving remote paths."""
+        if isinstance(value, dict):
+            result = {
+                key: _qualify_remote_payload(item, node_id, key)
+                for key, item in value.items()
+            }
+            if isinstance(result.get("run_id"), str):
+                run_id = result["run_id"]
+                if run_id and not parse_qualified_run_id(run_id):
+                    result["remote_run_id"] = run_id
+                    result["run_id"] = qualify_run_id(node_id, run_id)
+                result.setdefault("node_id", node_id)
+            return result
+        if isinstance(value, list):
+            if parent_key in {"affected_run_ids", "slots"}:
+                return [
+                    qualify_run_id(node_id, item)
+                    if isinstance(item, str) and item else item
+                    for item in value
+                ]
+            return [
+                _qualify_remote_payload(item, node_id, parent_key)
+                for item in value
+            ]
+        if (isinstance(value, str)
+                and parent_key in {"source_run_id", "resumed_from"}
+                and value and not parse_qualified_run_id(value)):
+            return qualify_run_id(node_id, value)
+        return value
+
+    async def _proxy_remote_http(request: Request, node, path: str):
+        headers = {
+            key: value for key, value in request.headers.items()
+            if key.lower() not in {
+                "host", "connection", "content-length", "authorization",
+                "cookie", "accept-encoding",
+            }
+        }
+        headers.update(node.authorization_headers)
+        try:
+            upstream = await remote_http_client.request(
+                request.method,
+                node.upstream_url(path),
+                headers=headers,
+                params=request.query_params,
+                content=await request.body(),
+                timeout=httpx.Timeout(
+                    connect=node.connect_timeout_seconds,
+                    read=max(30.0, node.request_timeout_seconds),
+                    write=max(30.0, node.request_timeout_seconds),
+                    pool=node.connect_timeout_seconds,
+                ),
+            )
+        except httpx.HTTPError as exc:
+            remote_nodes.request_refresh()
+            return JSONResponse(
+                {"detail": f"remote node {node.label} unavailable: {exc}"},
+                status_code=502,
+            )
+        response_headers = {
+            key: value for key, value in upstream.headers.items()
+            if key.lower() not in {
+                "content-encoding", "transfer-encoding", "content-length",
+                "connection", "set-cookie",
+            }
+        }
+        content = upstream.content
+        content_type = upstream.headers.get("content-type", "")
+        if "application/json" in content_type.lower():
+            try:
+                payload = _qualify_remote_payload(upstream.json(), node.id)
+                if (path.endswith("/tty") and isinstance(payload, dict)
+                        and isinstance(payload.get("url"), str)
+                        and payload["url"].startswith("/tty/")):
+                    payload["url"] = f"/remote-nodes/{node.id}{payload['url']}"
+                content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                response_headers["content-type"] = "application/json"
+            except (ValueError, TypeError):
+                pass
+        return Response(
+            content=content,
+            status_code=upstream.status_code,
+            headers=response_headers,
+            media_type=None,
+        )
+
+    async def _remote_json(node, path: str, *, method: str = "GET",
+                           body: Optional[dict[str, Any]] = None,
+                           params: Optional[dict[str, Any]] = None) -> Any:
+        try:
+            response = await remote_http_client.request(
+                method,
+                node.upstream_url(path),
+                headers=node.authorization_headers,
+                json=body,
+                params=params,
+                timeout=httpx.Timeout(
+                    connect=node.connect_timeout_seconds,
+                    read=max(30.0, node.request_timeout_seconds),
+                    write=max(30.0, node.request_timeout_seconds),
+                    pool=node.connect_timeout_seconds,
+                ),
+            )
+        except httpx.HTTPError as exc:
+            remote_nodes.request_refresh()
+            raise HTTPException(
+                502, f"remote node {node.label} unavailable: {exc}"
+            ) from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"detail": response.text[:400] or "invalid remote response"}
+        if response.status_code >= 400:
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            raise HTTPException(
+                response.status_code,
+                str(detail or f"remote node returned HTTP {response.status_code}"),
+            )
+        return _qualify_remote_payload(payload, node.id)
+
     @app.middleware("http")
     async def _token_gate(request: Request, call_next):
         authenticated = False
@@ -7198,7 +7491,11 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             if not authenticated and request.url.path != "/":
                 # Allow GET / to render a page that prompts for a token.
                 return JSONResponse({"error": "invalid token"}, status_code=401)
-        response = await call_next(request)
+        target = _remote_session_target(request.url.path)
+        response = (
+            await _proxy_remote_http(request, *target)
+            if target is not None else await call_next(request)
+        )
         if (token and authenticated
                 and not _token_matches(request.cookies.get("orch_token"), token)):
             response.set_cookie(
@@ -7240,11 +7537,66 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 )
             },
             "sync_status": sync_status.health_status(),
+            "remote_nodes": remote_nodes.public_status(),
         }
 
     @app.get("/api/config")
     def dashboard_config():
-        return _dashboard_client_config()
+        return {
+            **_dashboard_client_config(),
+            "remote_nodes": remote_nodes.browser_config(),
+        }
+
+    @app.get("/api/nodes")
+    def dashboard_nodes():
+        remote_nodes.request_refresh()
+        return {
+            "nodes": [
+                {
+                    "id": "local",
+                    "label": "Local",
+                    "online": True,
+                    "projects_root": _dashboard_client_config()["projects_root"],
+                    "session_count": len(
+                        session_snapshots.snapshot().get("sessions") or []
+                    ),
+                },
+                *remote_nodes.public_status(),
+            ],
+            "updated_at": time.time(),
+        }
+
+    @app.get("/api/nodes/{node_id}/reconnect")
+    def remote_node_reconnect_status(node_id: str):
+        try:
+            return remote_node_reconnect.status(node_id)
+        except KeyError as exc:
+            raise HTTPException(404, "remote node not found") from exc
+
+    @app.post("/api/nodes/{node_id}/reconnect")
+    def reconnect_remote_node(node_id: str):
+        try:
+            return remote_node_reconnect.start(node_id)
+        except KeyError as exc:
+            raise HTTPException(404, "remote node not found") from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/nodes/{node_id}/reconnect/continue")
+    def continue_remote_node_reconnect(node_id: str):
+        try:
+            return remote_node_reconnect.continue_after_verification(node_id)
+        except KeyError as exc:
+            raise HTTPException(404, "remote node not found") from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/nodes/{node_id}/reconnect/cancel")
+    def cancel_remote_node_reconnect(node_id: str):
+        try:
+            return remote_node_reconnect.cancel(node_id)
+        except KeyError as exc:
+            raise HTTPException(404, "remote node not found") from exc
 
     @app.get("/api/sync/status")
     def get_sync_status():
@@ -7491,6 +7843,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     async def tty_ws(ws: WebSocket, session: str):
         if token and not _dashboard_auth_matches(
             token, query_token=ws.query_params.get("token"),
+            authorization=ws.headers.get("authorization"),
             cookie_token=ws.cookies.get("orch_token"),
         ):
             await ws.close(code=1008, reason="invalid token")
@@ -7517,18 +7870,200 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                     except (WebSocketDisconnect, WsClosed):
                         return
                 async def s2c():
+                    mapper = _TtydOutputThemeMapper(
+                        ttyd.theme_for(session)
+                    )
                     try:
                         async for msg in up:
-                            if isinstance(msg, bytes):
-                                await ws.send_bytes(msg)
-                            else:
-                                await ws.send_text(msg)
+                            for mapped in mapper.transform(msg):
+                                if isinstance(mapped, bytes):
+                                    await ws.send_bytes(mapped)
+                                else:
+                                    await ws.send_text(mapped)
+                        tail = mapper.finish()
+                        if tail is not None:
+                            await ws.send_bytes(tail)
                     except (WebSocketDisconnect, WsClosed):
                         return
                 await asyncio.gather(c2s(), s2c())
         except Exception as e:
             try:
                 await ws.close(code=1011, reason=str(e)[:120])
+            except Exception:
+                pass
+
+    # Remote ttyd is still same-origin from the browser's point of view. The
+    # local dashboard proxies both the HTTP assets and WebSocket stream over
+    # the node's single SSH-forwarded connection.
+    async def _proxy_remote_tty_http(node, session: str, subpath: str,
+                                     request: Request):
+        remote_path = f"/tty/{quote(session, safe='')}/"
+        if subpath:
+            remote_path += subpath.lstrip("/")
+        headers = {
+            key: value for key, value in request.headers.items()
+            if key.lower() not in {
+                "host", "connection", "content-length", "authorization",
+                "cookie", "accept-encoding",
+            }
+        }
+        headers.update(node.authorization_headers)
+        try:
+            upstream = await remote_http_client.request(
+                request.method,
+                node.upstream_url(remote_path),
+                headers=headers,
+                params=request.query_params,
+                content=await request.body(),
+                timeout=httpx.Timeout(
+                    connect=node.connect_timeout_seconds,
+                    read=30.0,
+                    write=30.0,
+                    pool=node.connect_timeout_seconds,
+                ),
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                502, f"remote node {node.label} unavailable: {exc}"
+            ) from exc
+        response_headers = {
+            key: value for key, value in upstream.headers.items()
+            if key.lower() not in {
+                "content-encoding", "transfer-encoding", "content-length",
+                "connection", "set-cookie",
+            }
+        }
+        content = upstream.content
+        content_type = upstream.headers.get("content-type", "")
+        if (upstream.status_code == 200
+                and (not subpath or subpath == "index.html")
+                and "text/html" in content_type.lower()):
+            content = _patch_ttyd_index_interactions(content)
+            response_headers.pop("etag", None)
+            response_headers["cache-control"] = (
+                "no-cache, no-store, must-revalidate"
+            )
+        return Response(
+            content=content,
+            status_code=upstream.status_code,
+            headers=response_headers,
+            media_type=None,
+        )
+
+    @app.get("/remote-nodes/{node_id}/tty/{session}")
+    async def remote_tty_root_redirect(node_id: str, session: str):
+        if remote_nodes.get(node_id) is None:
+            raise HTTPException(404, "remote node not found")
+        return Response(
+            status_code=307,
+            headers={"location": f"/remote-nodes/{node_id}/tty/{session}/"},
+        )
+
+    @app.get("/remote-nodes/{node_id}/tty/{session}/")
+    async def remote_tty_index(node_id: str, session: str, request: Request):
+        node = remote_nodes.get(node_id)
+        if node is None:
+            raise HTTPException(404, "remote node not found")
+        return await _proxy_remote_tty_http(node, session, "", request)
+
+    @app.api_route(
+        "/remote-nodes/{node_id}/tty/{session}/{subpath:path}",
+        methods=["GET", "POST", "HEAD"],
+        include_in_schema=False,
+    )
+    async def remote_tty_asset(node_id: str, session: str, subpath: str,
+                               request: Request):
+        if subpath == "ws":
+            raise HTTPException(426, "use websocket upgrade")
+        node = remote_nodes.get(node_id)
+        if node is None:
+            raise HTTPException(404, "remote node not found")
+        return await _proxy_remote_tty_http(node, session, subpath, request)
+
+    @app.websocket("/remote-nodes/{node_id}/tty/{session}/ws")
+    async def remote_tty_ws(ws: WebSocket, node_id: str, session: str):
+        if token and not _dashboard_auth_matches(
+            token, query_token=ws.query_params.get("token"),
+            authorization=ws.headers.get("authorization"),
+            cookie_token=ws.cookies.get("orch_token"),
+        ):
+            await ws.close(code=1008, reason="invalid token")
+            return
+        node = remote_nodes.get(node_id)
+        if node is None:
+            await ws.close(code=1008, reason="remote node not found")
+            return
+        await ws.accept(subprotocol="tty")
+        upstream_path = f"/tty/{quote(session, safe='')}/ws"
+        upstream_url = node.websocket_url(upstream_path)
+        connect_kwargs: dict[str, Any] = {}
+        if node.authorization_headers:
+            header_key = (
+                "additional_headers"
+                if "additional_headers" in inspect.signature(
+                    websockets.connect
+                ).parameters
+                else "extra_headers"
+            )
+            connect_kwargs[header_key] = node.authorization_headers
+        try:
+            async with websockets.connect(
+                upstream_url,
+                subprotocols=["tty"],
+                max_size=None,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=2,
+                **connect_kwargs,
+            ) as upstream:
+                async def browser_to_remote():
+                    try:
+                        while True:
+                            message = await ws.receive()
+                            if message["type"] == "websocket.disconnect":
+                                return
+                            data = (
+                                message.get("bytes")
+                                if message.get("bytes") is not None
+                                else message.get("text")
+                            )
+                            if data is not None:
+                                await upstream.send(data)
+                    except (WebSocketDisconnect, WsClosed):
+                        return
+
+                async def remote_to_browser():
+                    try:
+                        async for message in upstream:
+                            if isinstance(message, bytes):
+                                await ws.send_bytes(message)
+                            else:
+                                await ws.send_text(message)
+                    except (WebSocketDisconnect, WsClosed):
+                        return
+
+                tasks = {
+                    asyncio.create_task(browser_to_remote()),
+                    asyncio.create_task(remote_to_browser()),
+                }
+                done, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                # If the remote ttyd closes first, send an orderly browser
+                # close before cancelling the task blocked in ws.receive().
+                # Cancelling an ASGI receive directly can leak cancellation
+                # into TestClient and, under uvicorn, produce noisy stack
+                # traces during ordinary disconnects.
+                try:
+                    await ws.close(code=1000)
+                except Exception:
+                    pass
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*done, *pending, return_exceptions=True)
+        except Exception as exc:
+            try:
+                await ws.close(code=1011, reason=str(exc)[:120])
             except Exception:
                 pass
 
@@ -7580,10 +8115,19 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         # seconds. request_refresh coalesces while a scan is already running,
         # so slow workspaces never build an unbounded request queue.
         session_snapshots.request_refresh(min_age_s=4.5)
-        sessions = native_activity.apply(snapshot["sessions"])
+        remote_nodes.request_refresh()
+        sessions = [
+            *native_activity.apply(snapshot["sessions"]),
+            *remote_nodes.sessions(),
+        ]
         return {
             "sessions": sessions,
             "instance_id": dashboard_instance_id,
+            # A remote node can be temporarily absent while its SSH tunnel is
+            # still reconnecting after a dashboard restart.  The browser uses
+            # this snapshot to retain those pane slots instead of treating the
+            # missing sessions as deleted.
+            "remote_nodes": remote_nodes.public_status(),
             "snapshot": {
                 key: snapshot[key]
                 for key in (
@@ -7595,9 +8139,12 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @app.get("/api/native-activity")
     def native_session_activity():
-        """Return cheap native lifecycle deltas for frequent UI polling."""
+        """Return only cheap native lifecycle deltas for one-second UI polling."""
         return {
-            "sessions": native_activity.snapshot(),
+            "sessions": [
+                *native_activity.snapshot(),
+                *remote_nodes.native_activity(),
+            ],
             "updated_at": time.time(),
         }
 
@@ -8242,7 +8789,12 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
 
     @app.post("/api/sessions/{run_id}/paste-image")
     async def post_paste_image(run_id: str, request: Request):
-        """Store a browser clipboard image beside its local session."""
+        """Store a browser clipboard image beside the session on its host.
+
+        Qualified remote run IDs are handled by the existing raw-body remote
+        proxy before this route executes, so the returned absolute path always
+        belongs to the machine that owns the tmux session.
+        """
         r = _lookup_run_light(outputs_dir, run_id)
         if not r:
             raise HTTPException(404, "run not found")
@@ -8371,6 +8923,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         body = await request.json()
         panel_state = str(body.get("panel_state", "") or "").strip().lower()
         _persist_panel_state(r, panel_state)
+        # The browser reads a cached all-session snapshot. Ask its background
+        # worker to observe the persisted value now instead of leaving the UI
+        # on the pre-mutation snapshot until the next periodic scan.
+        session_snapshots.request_refresh()
         return {"ok": True, "panel_state": panel_state}
 
     @app.post("/api/sessions/{run_id}/terminal-theme")
@@ -8619,6 +9175,20 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
           mode:  "iterm" (default) or "background"
         """
         body = await request.json()
+        node_id = str(body.pop("node_id", "local") or "local").strip()
+        if node_id != "local":
+            node = remote_nodes.get(node_id)
+            if node is None:
+                raise HTTPException(404, "remote node not found")
+            # A remote Linux node cannot open a local macOS iTerm window.
+            # Preserve the requested agent/model/cwd but always create the
+            # remote tmux session in background mode.
+            body["mode"] = "background"
+            result = await _remote_json(
+                node, "/api/create", method="POST", body=body
+            )
+            remote_nodes.request_refresh()
+            return result
         agent = (body.get("agent") or "cursor").strip()
         model = (body.get("model") or "").strip()
         effort = (body.get("effort") or "").strip().lower()
@@ -8647,11 +9217,20 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         )
 
     @app.get("/api/resumable")
-    def get_resumable(
+    async def get_resumable(
         limit: int = Query(80, ge=1, le=300),
         q: str = Query("", max_length=240),
+        node_id: str = Query("local", max_length=64),
     ):
         """List ended sessions that have a recorded native resume id."""
+        if node_id != "local":
+            node = remote_nodes.get(node_id)
+            if node is None:
+                raise HTTPException(404, "remote node not found")
+            return await _remote_json(
+                node, "/api/resumable",
+                params={"limit": limit, "q": q},
+            )
         query_parts = [p for p in str(q or "").lower().split() if p]
         rows = []
         for r in _discover_runs(outputs_dir):
@@ -8894,6 +9473,25 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     async def post_resume(request: Request):
         """Start a new background/iTerm session using a saved native resume id."""
         body = await request.json()
+        node_id = str(body.pop("node_id", "local") or "local").strip()
+        if node_id != "local":
+            node = remote_nodes.get(node_id)
+            if node is None:
+                raise HTTPException(404, "remote node not found")
+            parsed = parse_qualified_run_id(str(body.get("run_id") or ""))
+            if parsed:
+                parsed_node, remote_run_id = parsed
+                if parsed_node != node_id:
+                    raise HTTPException(
+                        400, "resume session belongs to a different remote node"
+                    )
+                body["run_id"] = remote_run_id
+            body["mode"] = "background"
+            result = await _remote_json(
+                node, "/api/resume", method="POST", body=body
+            )
+            remote_nodes.request_refresh()
+            return result
         run_id = (body.get("run_id") or "").strip()
         if not run_id:
             raise HTTPException(400, "run_id is required")

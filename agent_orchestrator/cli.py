@@ -930,7 +930,8 @@ def cmd_dashboard(args):
     app = dash_mod.create_app(outputs_dir, token=args.token,
                               ttyd_enabled=args.ttyd, ttyd_host=ttyd_host,
                               bind_host=args.host, port=args.port, scheme=scheme,
-                              publish_icloud=publish_icloud)
+                              publish_icloud=publish_icloud,
+                              remote_nodes_enabled=not args.node_only)
 
     print(f"Outputs:  {outputs_dir}")
     print(f"Listen:   {scheme}://{args.host}:{args.port}")
@@ -944,6 +945,8 @@ def cmd_dashboard(args):
         print("Token:    (none — open access; pass --token or set $ORCH_DASHBOARD_TOKEN to lock)")
     if args.ttyd:
         print("ttyd:     enabled; browsers connect via the dashboard's same-origin proxy")
+    if args.node_only:
+        print("Mode:     remote execution node (remote aggregation disabled)")
     best = dash_mod.pick_best_ip(args.host)
     if best:
         print(f"Phone:    {dash_mod.build_access_url(best, args.port, scheme, None)}")
@@ -995,7 +998,9 @@ def cmd_agent_event(args):
                 json.dump(response, sys.stdout, separators=(",", ":"))
                 sys.stdout.write("\n")
     except Exception as exc:
-        # Hook stdout can become model context, so diagnostics stay on stderr.
+        # Lifecycle telemetry must never block a Claude turn. Keep stdout
+        # empty (hook stdout can become model context) and emit only a terse
+        # diagnostic on stderr.
         print(f"orch agent-event ignored: {exc}", file=sys.stderr)
 
 
@@ -1130,6 +1135,9 @@ def main():
                              "(useful if ttyd isn't installed or for CI/headless tests)")
     p_dash.add_argument("--ttyd-host", default="",
                         help="hostname browsers should use to reach ttyd (defaults to --host)")
+    p_dash.add_argument("--node-only", action="store_true",
+                        help="serve this dashboard as a remote execution node; "
+                             "ignore configured remote_nodes to prevent federation loops")
     p_dash.set_defaults(func=cmd_dashboard)
 
     p_url = sub.add_parser("url", help="Print current dashboard URL (auto-picks VPN/LAN) and copy to clipboard")
@@ -1150,7 +1158,9 @@ def main():
                        help="emit JSON with all candidates")
     p_url.set_defaults(func=cmd_url)
 
-    p_agent_event = sub.add_parser("agent-event", help=argparse.SUPPRESS)
+    p_agent_event = sub.add_parser(
+        "agent-event", help=argparse.SUPPRESS,
+    )
     p_agent_event.add_argument("--agent", required=True, choices=("claude",))
     p_agent_event.add_argument(
         "--permission-policy", default="observe",
