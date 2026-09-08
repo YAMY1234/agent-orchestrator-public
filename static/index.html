@@ -2957,10 +2957,25 @@
     history.replaceState(null, "", location.pathname + (cleanQuery ? "?" + cleanQuery : "") + location.hash);
   }
 
+  function isRawRequestBody(body) {
+    if (!body) return false;
+    // `instanceof Blob` fails for Files originating in the tty iframe because
+    // each frame has its own Blob/File constructors.  Brand checks remain
+    // stable across realms and keep iframe clipboard images out of the JSON
+    // serialization path.
+    const tag = Object.prototype.toString.call(body);
+    return tag === "[object FormData]"
+      || tag === "[object Blob]"
+      || tag === "[object File]"
+      || tag === "[object ArrayBuffer]"
+      || ArrayBuffer.isView(body);
+  }
+
   async function api(path, opts = {}) {
     const headers = Object.assign({}, opts.headers || {});
     if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
-    if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+    const rawBody = isRawRequestBody(opts.body);
+    if (opts.body && typeof opts.body === "object" && !rawBody) {
       headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.body);
     }
@@ -6346,6 +6361,12 @@
       }
     });
     inputEl.addEventListener("input", () => autoGrow(inputEl));
+    inputEl.addEventListener("paste", (event) => {
+      void handleClipboardImagePaste(event, runId, {
+        inputEl,
+        sendToTty: ctrl.usingTty,
+      });
+    });
     btnSend.addEventListener("click", sendCurrent);
     btnProgress.addEventListener("click", () => sendText(runId, "现在进度如何？", true));
     btnMonitor.addEventListener("click", () => sendText(runId, "监控要有 5 分钟心跳,不能出问题了几十分钟没察觉。把监控改成每 5 分钟退出报一次状态(有结果就早退),每次收到就复查 + 重挂,这样卡住也能 5 分钟内发现。", true));
@@ -6723,6 +6744,11 @@
         if (event.stopImmediatePropagation) event.stopImmediatePropagation();
         if (!event.repeat) void sendKey(runId, "C-_");
       }, { capture: true });
+      frameDocument.addEventListener("paste", (event) => {
+        // Route images to the real agent composer, not the dashboard's
+        // auxiliary textarea.
+        void handleClipboardImagePaste(event, runId, { sendToTty: true });
+      }, { capture: true });
     });
   }
 
@@ -6896,6 +6922,139 @@
   }
 
   // ---------- Actions ----------
+  function clipboardImageFiles(event) {
+    const clipboard = event && event.clipboardData;
+    if (!clipboard) return [];
+    const fromItems = Array.from(clipboard.items || [])
+      .filter(item => item.kind === "file" && String(item.type || "").startsWith("image/"))
+      .map(item => item.getAsFile())
+      .filter(Boolean);
+    if (fromItems.length) return fromItems;
+    return Array.from(clipboard.files || [])
+      .filter(file => String(file.type || "").startsWith("image/"));
+  }
+
+  const DIRECT_CLIPBOARD_IMAGE_TYPES = new Set([
+    "image/png", "image/x-png", "image/jpeg", "image/jpg", "image/pjpeg",
+    "image/gif", "image/webp", "image/tiff", "image/x-tiff",
+  ]);
+
+  async function normalizeClipboardImageForUpload(file) {
+    const type = String(file.type || "").toLowerCase();
+    if (DIRECT_CLIPBOARD_IMAGE_TYPES.has(type)) return file;
+
+    let bitmap = null;
+    let image = null;
+    let objectUrl = "";
+    try {
+      if (typeof createImageBitmap === "function") {
+        try { bitmap = await createImageBitmap(file); } catch (_) {}
+      }
+      if (!bitmap) {
+        objectUrl = URL.createObjectURL(file);
+        image = new Image();
+        image.src = objectUrl;
+        await image.decode();
+      }
+      const width = bitmap ? bitmap.width : image.naturalWidth;
+      const height = bitmap ? bitmap.height : image.naturalHeight;
+      if (!width || !height || width * height > 80000000) {
+        throw new Error(`clipboard image dimensions are invalid (${width}x${height})`);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("browser canvas is unavailable");
+      context.drawImage(bitmap || image, 0, 0);
+      const png = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          blob => blob ? resolve(blob) : reject(new Error("PNG conversion failed")),
+          "image/png",
+        );
+      });
+      const baseName = String(file.name || "clipboard-image").replace(/\.[^.]*$/, "");
+      return new File([png], `${baseName}.png`, { type: "image/png" });
+    } catch (error) {
+      throw new Error(
+        `clipboard image type ${type || "unknown"} cannot be decoded: `
+        + (error && error.message ? error.message : error),
+      );
+    } finally {
+      if (bitmap && typeof bitmap.close === "function") bitmap.close();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function uploadClipboardImage(runId, file) {
+    const normalized = await normalizeClipboardImageForUpload(file);
+    return api(`/api/sessions/${encodeURIComponent(runId)}/paste-image`, {
+      method: "POST",
+      headers: { "Content-Type": normalized.type || "application/octet-stream" },
+      body: normalized,
+    });
+  }
+
+  function insertTextAtCursor(input, text) {
+    const start = Number.isInteger(input.selectionStart)
+      ? input.selectionStart : input.value.length;
+    const end = Number.isInteger(input.selectionEnd)
+      ? input.selectionEnd : start;
+    const before = input.value.slice(0, start);
+    const after = input.value.slice(end);
+    const prefix = before && !/\s$/.test(before) ? "\n" : "";
+    const suffix = after && !/^\s/.test(after) ? "\n" : "";
+    const inserted = prefix + text + suffix;
+    input.value = before + inserted + after;
+    const caret = before.length + inserted.length;
+    input.setSelectionRange(caret, caret);
+    autoGrow(input);
+    input.focus();
+  }
+
+  async function handleClipboardImagePaste(
+    event, runId, { inputEl = null, sendToTty = false } = {},
+  ) {
+    const files = clipboardImageFiles(event);
+    if (!files.length) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    try {
+      const ctrl = paneCtrls.get(runId);
+      const session = ctrl ? currentSessionForPane(ctrl)
+        : (sessions.find(item => item.run_id === runId) || {});
+
+      // Local Codex and Claude Code can consume the browser machine's native
+      // clipboard directly. Forward Ctrl+V so their own image attachment UI
+      // remains authoritative.
+      if (sendToTty && !session.remote && files.length === 1) {
+        await sendKey(runId, "C-v");
+        return true;
+      }
+
+      // Remote sessions cannot see the browser clipboard. Upload to the
+      // owning node and paste its absolute path into the agent composer.
+      const paths = [];
+      for (const file of files) {
+        const upload = await uploadClipboardImage(runId, file);
+        const path = String(upload.path || "");
+        if (!path) throw new Error("image upload did not return a path");
+        paths.push(path);
+      }
+      const text = paths.join("\n");
+      if (sendToTty) {
+        await sendText(runId, text, false);
+      } else if (inputEl) {
+        insertTextAtCursor(inputEl, text);
+      }
+      return true;
+    } catch (error) {
+      alert("image paste failed: " + (error && error.message ? error.message : error));
+      return false;
+    }
+  }
+
   async function sendText(runId, text, enter = true) {
     // Backend caps paste at 4 MB and chunks internally. Very large pastes
     // take visibly longer because tmux has to process each 8 KB chunk

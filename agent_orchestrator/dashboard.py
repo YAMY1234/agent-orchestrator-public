@@ -33,6 +33,7 @@ import copy
 import hashlib
 import hmac
 import html as html_lib
+import io
 import json
 import mimetypes
 import os
@@ -100,6 +101,63 @@ DEFAULT_OUTPUTS_DIR = Path(
 ).expanduser().resolve()
 STATIC_DIR = PROJECT_DIR / "static"
 DEFAULT_DASHBOARD_CONFIG = PROJECT_DIR / "dashboard.local.json"
+
+_MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_CLIPBOARD_IMAGE_PIXELS = 80_000_000
+_CLIPBOARD_IMAGE_TYPES = {
+    "image/png": (".png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
+    "image/x-png": (".png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
+    "image/jpeg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    "image/jpg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    "image/pjpeg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    "image/gif": (
+        ".gif", lambda data: data.startswith((b"GIF87a", b"GIF89a")),
+    ),
+    "image/webp": (
+        ".webp",
+        lambda data: len(data) >= 12
+        and data.startswith(b"RIFF")
+        and data[8:12] == b"WEBP",
+    ),
+}
+_CLIPBOARD_TIFF_TYPES = {"image/tiff", "image/x-tiff"}
+
+
+def _clipboard_tiff_to_png(raw: bytes) -> bytes:
+    """Decode a clipboard TIFF and return a bounded, agent-friendly PNG."""
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as exc:
+        raise HTTPException(
+            415,
+            "TIFF clipboard images require Pillow; reinstall dashboard dependencies",
+        ) from exc
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            if str(image.format or "").upper() != "TIFF":
+                raise HTTPException(400, "clipboard image data is not TIFF")
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > _MAX_CLIPBOARD_IMAGE_PIXELS:
+                raise HTTPException(
+                    413,
+                    f"clipboard image dimensions are too large ({width}x{height})",
+                )
+            has_alpha = "A" in image.getbands() or "transparency" in image.info
+            converted = image.convert("RGBA" if has_alpha else "RGB")
+            output = io.BytesIO()
+            converted.save(output, format="PNG")
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(400, f"cannot decode TIFF clipboard image: {exc}") from exc
+    png = output.getvalue()
+    if len(png) > _MAX_CLIPBOARD_IMAGE_BYTES:
+        raise HTTPException(
+            413,
+            f"converted clipboard image too large ({len(png)} bytes > "
+            f"{_MAX_CLIPBOARD_IMAGE_BYTES})",
+        )
+    return png
 
 
 def _configured_projects_dir(outputs_dir: Path,
@@ -8181,6 +8239,65 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             raise HTTPException(500,
                 f"tmux send-keys failed ({len(text)} chars): {err}")
         return {"ok": ok, "session": session, "bytes_sent": len(text)}
+
+    @app.post("/api/sessions/{run_id}/paste-image")
+    async def post_paste_image(run_id: str, request: Request):
+        """Store a browser clipboard image beside its local session."""
+        r = _lookup_run_light(outputs_dir, run_id)
+        if not r:
+            raise HTTPException(404, "run not found")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0]
+        content_type = content_type.strip().lower()
+        image_type = _CLIPBOARD_IMAGE_TYPES.get(content_type)
+        is_tiff = content_type in _CLIPBOARD_TIFF_TYPES
+        if image_type is None and not is_tiff:
+            raise HTTPException(
+                415,
+                "unsupported clipboard image type; use PNG, JPEG, GIF, WebP, or TIFF",
+            )
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(400, "clipboard image is empty")
+        if len(raw) > _MAX_CLIPBOARD_IMAGE_BYTES:
+            raise HTTPException(
+                413,
+                f"clipboard image too large ({len(raw)} bytes > "
+                f"{_MAX_CLIPBOARD_IMAGE_BYTES})",
+            )
+        if is_tiff:
+            raw = _clipboard_tiff_to_png(raw)
+            content_type = "image/png"
+            extension = ".png"
+        else:
+            extension, signature_matches = image_type
+            if not signature_matches(raw):
+                raise HTTPException(400, "clipboard image data does not match its type")
+
+        run_dir_text = str(r.get("run_dir") or "").strip()
+        if run_dir_text:
+            image_dir = Path(run_dir_text) / "pasted-images"
+        else:
+            run_key = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+            image_dir = outputs_dir / ".pasted-images" / run_key
+        image_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            image_dir.chmod(0o700)
+        except OSError:
+            pass
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        target = image_dir / f"clipboard-{stamp}-{uuid.uuid4().hex[:8]}{extension}"
+        target.write_bytes(raw)
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "path": str(target.resolve()),
+            "name": target.name,
+            "content_type": content_type,
+            "bytes": len(raw),
+        }
 
     @app.post("/api/sessions/{run_id}/label")
     async def post_label(run_id: str, request: Request):

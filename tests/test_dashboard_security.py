@@ -180,6 +180,78 @@ class MetadataConcurrencyTests(unittest.TestCase):
             }])
 
 
+class ClipboardImageContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (dashboard.STATIC_DIR / "index.html").read_text()
+
+    def test_image_paste_uses_native_agent_input(self):
+        self.assertIn("normalizeClipboardImageForUpload(file)", self.source)
+        self.assertIn('tag === "[object File]"', self.source)
+        self.assertIn('if (sendToTty && !session.remote && files.length === 1)', self.source)
+        self.assertIn('await sendKey(runId, "C-v");', self.source)
+        self.assertIn('await sendText(runId, text, false);', self.source)
+        self.assertNotIn('<image name=[Pasted Image]', self.source)
+
+
+class ClipboardImageUploadTests(unittest.TestCase):
+    def _app_and_run(self, root: Path):
+        outputs = root / "outputs"
+        run_dir = outputs / "demo-run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "session.json").write_text(json.dumps({
+            "name": "demo",
+            "cwd": str(root),
+            "status": "running",
+        }))
+        return dashboard.create_app(outputs, ttyd_enabled=False), run_dir
+
+    def test_upload_stores_a_private_png_beside_the_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app, run_dir = self._app_and_run(Path(temp_dir))
+            image = b"\x89PNG\r\n\x1a\nlocal-image"
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sessions/demo-run::demo/paste-image",
+                    content=image,
+                    headers={"Content-Type": "image/png"},
+                )
+            self.assertEqual(response.status_code, 200)
+            target = Path(response.json()["path"])
+            self.assertEqual(target.parent, (run_dir / "pasted-images").resolve())
+            self.assertEqual(target.read_bytes(), image)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def test_upload_converts_macos_tiff_clipboard_image_to_png(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app, _ = self._app_and_run(Path(temp_dir))
+            source = io.BytesIO()
+            Image.new("RGB", (3, 2), (20, 80, 160)).save(source, format="TIFF")
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sessions/demo-run::demo/paste-image",
+                    content=source.getvalue(),
+                    headers={"Content-Type": "image/tiff"},
+                )
+            self.assertEqual(response.status_code, 200)
+            target = Path(response.json()["path"])
+            self.assertEqual(target.suffix, ".png")
+            self.assertTrue(target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_upload_rejects_non_image_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app, _ = self._app_and_run(Path(temp_dir))
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sessions/demo-run::demo/paste-image",
+                    content=b"not an image",
+                    headers={"Content-Type": "text/plain"},
+                )
+            self.assertEqual(response.status_code, 415)
+
+
 class TerminalThemeTests(unittest.TestCase):
     def test_theme_names_are_normalized(self):
         self.assertEqual(
