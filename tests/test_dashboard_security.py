@@ -673,6 +673,8 @@ class TerminalThemeTests(unittest.TestCase):
         self.assertIn("（【《〈「『〔［｛，。；：！？、".encode(), patched)
         self.assertIn(b"cleanHttpUrl(oscUrl)", patched)
         self.assertIn(b"cleanHttpUrl(raw)", patched)
+        self.assertIn(b"balance < 0 && url.endsWith(closing)", patched)
+        self.assertIn(b'screen.addEventListener("mousemove"', patched)
         self.assertIn(b"window.open(pendingUrl", patched)
         self.assertEqual(
             terminal_theme.patch_ttyd_index_interactions(patched),

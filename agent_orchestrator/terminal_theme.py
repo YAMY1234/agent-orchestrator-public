@@ -144,6 +144,21 @@ _TTYD_INTERACTION_SCRIPT = r"""<script id="orch-ttyd-interactions-v1">
       const cjkBoundary = url.search(/[（【《〈「『〔［｛，。；：！？、]/u);
       if (cjkBoundary >= 0) url = url.slice(0, cjkBoundary);
       url = url.replace(/[.,;:!?]+$/, "");
+      // Markdown commonly leaves its closing delimiter next to a literal
+      // URL. Drop only unmatched trailing delimiters so valid targets such
+      // as `Function_(mathematics)` remain intact.
+      for (const [opening, closing] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
+        let balance = 0;
+        for (const character of url) {
+          if (character === opening) balance += 1;
+          else if (character === closing) balance -= 1;
+        }
+        while (balance < 0 && url.endsWith(closing)) {
+          url = url.slice(0, -1);
+          balance += 1;
+        }
+      }
+      url = url.replace(/[.,;:!?]+$/, "");
       return /^https?:\/\//i.test(url) ? url : "";
     };
 
