@@ -435,7 +435,8 @@
   }
   .dot.unread-ready,
   .dot.unread-reminder,
-  .dot.unread-needs-input {
+  .dot.unread-needs-input,
+  .dot.unread-blocked {
     width: 10px; height: 10px;
     border: 0;
     animation: none;
@@ -452,6 +453,10 @@
   .dot.unread-needs-input {
     background: #ff7b72;
     box-shadow: 0 0 10px rgba(255,123,114,0.9);
+  }
+  .dot.unread-blocked {
+    background: #bc8cff;
+    box-shadow: 0 0 10px rgba(188,140,255,0.82);
   }
   @keyframes unread-reminder-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
@@ -677,6 +682,10 @@
   .pane-card.attention-needs-input {
     border-color: #ff7b72;
     box-shadow: 0 0 0 2px rgba(255,123,114,.22);
+  }
+  .pane-card.attention-blocked {
+    border-color: #bc8cff;
+    box-shadow: 0 0 0 2px rgba(188,140,255,.20);
   }
   @keyframes pane-busy-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.00); }
@@ -3108,6 +3117,7 @@
   const PANE_ACTIVITY_CLASSES = ["busy", "background-working"];
   const PANE_ATTENTION_CLASSES = [
     "attention-ready", "attention-reminder", "attention-needs-input",
+    "attention-blocked",
   ];
   const SIDEBAR_PRIORITY_FILTERS = [
     ["all", "All"],
@@ -5702,8 +5712,10 @@
     const mission = s.mission_control || {};
     const missionState = String(mission.state || "").toLowerCase();
     const priority = String(s.panel_state || mission.priority || "").toLowerCase();
-    if (priority === "blocked" || missionState === "blocked"
-        || nativeState === "needs_input") {
+    if (priority === "blocked" || missionState === "blocked") {
+      return "blocked";
+    }
+    if (nativeState === "needs_input") {
       return "needs-input";
     }
     const waiting = ["waiting_user", "ended"].includes(nativeState)
@@ -5742,7 +5754,8 @@
     const attention = sessionAttentionState(s);
     if (attention) {
       const title = attention === "reminder" ? "Unread reminder"
-        : attention === "needs-input" ? "Agent needs input" : "Unread result";
+        : attention === "needs-input" ? "Agent needs input"
+        : attention === "blocked" ? "Blocked" : "Unread result";
       return { classes: `${dotClass(s)} unread-${attention}`, title };
     }
     if (sessionDetachedShellHint(s)) {

@@ -519,12 +519,22 @@ class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
         self.assertIn('return "reminder"', attention)
         self.assertIn("function sessionVisibleUnreadState(s)", self.source)
 
+    def test_blocked_visual_is_distinct_from_needs_input(self):
+        start = self.source.index("function sessionPersistentAttentionState(s)")
+        end = self.source.index("function sessionVisibleUnreadState(s)", start)
+        attention = self.source[start:end]
+        self.assertIn('missionState === "blocked"', attention)
+        self.assertIn('return "blocked";', attention)
+        self.assertIn('.dot.unread-blocked', self.source)
+        self.assertIn('.pane-card.attention-blocked', self.source)
+
     def test_priority_badges_no_longer_own_pane_border(self):
         self.assertNotIn(".pane-card.idle-p0", self.source)
         self.assertNotIn(".pane-card.idle-p1", self.source)
         self.assertIn(".pane-card.attention-ready", self.source)
         self.assertIn(".pane-card.attention-reminder", self.source)
         self.assertIn(".pane-card.attention-needs-input", self.source)
+        self.assertIn(".pane-card.attention-blocked", self.source)
 
     def test_notifications_use_effective_activity_not_raw_busy_only(self):
         check_start = self.source.index("function check(list)")
