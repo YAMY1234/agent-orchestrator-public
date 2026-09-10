@@ -275,6 +275,8 @@ class DashboardNotificationContractTests(unittest.TestCase):
             self.source,
         )
         self.assertIn('await sendKey(runId, "C-v");', self.source)
+        self.assertIn('agent.includes("claude")', self.source)
+        self.assertIn('paths.map(path => `@${path} `)', self.source)
         self.assertIn('await sendText(runId, text, false);', self.source)
         self.assertNotIn('<image name=[Pasted Image]', self.source)
 

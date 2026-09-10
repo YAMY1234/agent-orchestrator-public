@@ -7759,10 +7759,11 @@
       }
 
       // A remote process cannot read the browser machine's clipboard. Store
-      // the bytes on the node that owns the session and paste its local path
-      // into the real agent composer. Codex turns an image path into a native
-      // attachment; Claude Code accepts image paths as image input. Plain-mode
-      // panes use this same path without any custom `<image ...>` syntax.
+      // the bytes on the node that owns the session and reference its local
+      // path from the real agent composer. Codex recognizes a pasted image
+      // path directly; Claude Code requires an @ file reference in order to
+      // load the image instead of treating the path as ordinary prompt text.
+      // Plain-mode panes use the same agent-specific reference syntax.
       const paths = [];
       for (const file of files) {
         const upload = await uploadClipboardImage(runId, file);
@@ -7770,7 +7771,11 @@
         if (!path) throw new Error("image upload did not return a path");
         paths.push(path);
       }
-      const text = paths.join("\n");
+      const agent = String(session.agent || (session.resume || {}).agent || "")
+        .trim().toLowerCase();
+      const text = agent.includes("claude")
+        ? paths.map(path => `@${path} `).join("\n")
+        : paths.join("\n");
       if (sendToTty) {
         await sendText(runId, text, false);
       } else if (inputEl) {
