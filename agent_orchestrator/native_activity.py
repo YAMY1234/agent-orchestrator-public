@@ -777,7 +777,7 @@ class NativeActivityService:
                     mission["attention_reason"] = native.get("reason") or "Waiting for your input"
                 elif (
                     mission_state == "waiting"
-                    and priority in {"p0", "p1"}
+                    and priority in {"lead", "p0", "p1"}
                     and float(activity_age or 0.0) >= 300.0
                 ):
                     mission["needs_attention"] = True

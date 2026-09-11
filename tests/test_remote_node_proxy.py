@@ -27,6 +27,7 @@ def _free_port() -> int:
 def _fake_remote_node() -> FastAPI:
     app = FastAPI()
     app.state.last_create = {}
+    app.state.last_resume = {}
     app.state.last_restore = {}
 
     @app.get("/api/health")
@@ -126,6 +127,16 @@ def _fake_remote_node() -> FastAPI:
         body = await request.json()
         app.state.last_create = body
         return {"ok": True, "run_id": "created-remote"}
+
+    @app.post("/api/resume")
+    async def resume(request: Request):
+        body = await request.json()
+        app.state.last_resume = body
+        return {
+            "ok": True,
+            "run_id": "resumed-remote",
+            "resumed_from": body.get("run_id", ""),
+        }
 
     @app.get("/tty/{session}/", response_class=HTMLResponse)
     def tty_index(session: str):
@@ -276,6 +287,21 @@ class RemoteNodeProxyTest(unittest.TestCase):
                     self.assertEqual(
                         self.server.config.app.state.last_create["mode"],
                         "background",
+                    )
+
+                    resumed = client.post("/api/resume", json={
+                        "node_id": "dev",
+                        "run_id": run_id,
+                        "mode": "background",
+                    })
+                    self.assertEqual(resumed.status_code, 200)
+                    self.assertEqual(
+                        parse_qualified_run_id(resumed.json()["run_id"]),
+                        ("dev", "resumed-remote"),
+                    )
+                    self.assertEqual(
+                        self.server.config.app.state.last_resume,
+                        {"run_id": "remote-run 1", "mode": "background"},
                     )
 
                     recovery = client.get("/api/nodes/dev/recovery")

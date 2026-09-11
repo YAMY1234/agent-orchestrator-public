@@ -291,6 +291,32 @@ class DashboardExitedSessionContractTests(unittest.TestCase):
         self.assertIn("endExitedSession(runId, btnEndSession)", self.source)
         self.assertIn('text: "exited"', self.source)
 
+    def test_exited_agent_can_be_resumed_in_one_action(self):
+        self.assertIn('class="btn-recover-session"', self.source)
+        self.assertIn("recoverExitedSession(\n      runId", self.source)
+        recover_start = self.source.index("async function recoverExitedSession(")
+        recover_end = self.source.index(
+            "async function endExitedSession(", recover_start
+        )
+        recover_block = self.source[recover_start:recover_end]
+        self.assertIn("/stop`,", recover_block)
+        self.assertIn('await api("/api/resume"', recover_block)
+        self.assertIn("slots[oldSlot] = newRunId", recover_block)
+        self.assertIn("pendingRecoveredSessions.set(newRunId", recover_block)
+
+    def test_resume_endpoint_preserves_ui_metadata(self):
+        backend_source = Path(dashboard.__file__).read_text()
+        resume_start = backend_source.index('@app.post("/api/resume")')
+        resume_end = backend_source.index(
+            '@app.post("/api/organize")', resume_start
+        )
+        resume_block = backend_source[resume_start:resume_end]
+        self.assertIn(
+            "_copy_snapshot_ui_metadata_to_spawned_run(result, src)",
+            resume_block,
+        )
+        self.assertIn('"ui_metadata_copied"', resume_block)
+
     def test_close_pane_remains_separate_from_ending_session(self):
         self.assertIn('class="btn-unpin" title="Close this pane">×</button>', self.source)
         end_start = self.source.index("async function endExitedSession(")
@@ -399,14 +425,27 @@ class DashboardPanelStateContractTests(unittest.TestCase):
             ) as request_refresh:
                 response = client.post(
                     "/api/sessions/demo-run::demo/panel-state",
-                    json={"panel_state": "p0"},
+                    json={"panel_state": "lead"},
                 )
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(
-                json.loads(session_file.read_text())["panel_state"], "p0",
+                json.loads(session_file.read_text())["panel_state"], "lead",
             )
             request_refresh.assert_called_once_with()
+
+    def test_lead_is_available_and_sorts_before_p0(self):
+        self.assertIn('["lead", "Lead"]', self.source)
+        self.assertIn(
+            'const PANEL_STATE_SORT_ORDER = ["lead", "p0", "p1", "p2"',
+            self.source,
+        )
+        self.assertLess(
+            self.source.index('data-priority-filter="lead"'),
+            self.source.index('data-priority-filter="p0"'),
+        )
+        self.assertIn('.session-flag-badge.state-lead', self.source)
+        self.assertIn('.pane-state-select[data-state="lead"]', self.source)
 
 
 class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
@@ -516,11 +555,12 @@ class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
         self.assertIn("retrying automatically in 5 seconds", self.source)
         self.assertIn("}, 5000);", self.source)
 
-    def test_overdue_p0_and_p1_waiting_states_keep_attention_borders(self):
+    def test_overdue_lead_p0_and_p1_waiting_states_keep_attention_borders(self):
         start = self.source.index("function sessionPersistentAttentionState(s)")
         end = self.source.index("function sessionVisibleUnreadState(s)", start)
         attention = self.source[start:end]
         self.assertIn("waitingAge >= 5 * 60", attention)
+        self.assertIn('priority === "lead"', attention)
         self.assertIn('priority === "p0"', attention)
         self.assertIn('return "needs-input"', attention)
         self.assertIn('priority === "p1"', attention)

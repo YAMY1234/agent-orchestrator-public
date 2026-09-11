@@ -157,6 +157,10 @@
     color: var(--text); background: var(--bg-elev);
     border-color: var(--accent);
   }
+  .sess-priority-filter button[data-priority-filter="lead"].on {
+    color: #f778ba; border-color: rgba(247,120,186,0.78);
+    background: rgba(247,120,186,0.09);
+  }
   .sess-priority-filter button[data-priority-filter="p0"].on {
     color: #ff7b72; border-color: rgba(248,81,73,0.75);
   }
@@ -381,6 +385,7 @@
     font-weight: 700;
     line-height: 1.4;
   }
+  .session-flag-badge.state-lead { color: #f778ba; border-color: rgba(247,120,186,0.78); }
   .session-flag-badge.state-p0 { color: #ff7b72; border-color: rgba(248,81,73,0.75); }
   .session-flag-badge.state-p1 { color: #d29922; border-color: rgba(210,153,34,0.75); }
   .session-flag-badge.state-p2 { color: #58a6ff; border-color: rgba(88,166,255,0.68); }
@@ -663,7 +668,7 @@
     outline-offset: -2px;
   }
   /* Pane borders answer one question only: does this session need attention?
-     Priority remains visible in the P0/P1/P2 badge and never owns the border. */
+     Priority remains visible in the Lead/P0/P1/P2 badge and never owns the border. */
   .pane-card.busy {
     border-color: var(--ok);
     animation: pane-busy-pulse 1.4s ease-in-out infinite;
@@ -732,7 +737,7 @@
     font-size: 12px;
     min-width: 0;
   }
-  /* Unread state lives in the header, not the pane border: P0/P1/Blocked
+  /* Unread state lives in the header, not the pane border: Lead/P0/P1/Blocked
      keep exclusive ownership of border color. */
   .pane-head.unread-ready {
     background: linear-gradient(90deg, rgba(227,179,65,.18), var(--bg-elev) 52%);
@@ -877,6 +882,19 @@
     border-color: #ff7b72;
     background: rgba(248,81,73,0.15);
   }
+  .pane-head .btn-recover-session {
+    color: #56d364;
+    border-color: rgba(63,185,80,0.68);
+    background: rgba(63,185,80,0.08);
+    font-size: 13px;
+    line-height: 1;
+  }
+  .pane-head .btn-recover-session:hover {
+    color: #7ee787;
+    border-color: #56d364;
+    background: rgba(63,185,80,0.15);
+  }
+  .pane-state-select[data-state="lead"] { color: #f778ba; border-color: rgba(247,120,186,0.78); }
   .pane-state-select[data-state="p0"] { color: #ff7b72; border-color: rgba(248,81,73,0.75); }
   .pane-state-select[data-state="p1"] { color: #d29922; border-color: rgba(210,153,34,0.75); }
   .pane-state-select[data-state="p2"] { color: #58a6ff; border-color: rgba(88,166,255,0.68); }
@@ -2679,6 +2697,7 @@
       <button data-priority-filter="all" class="on">All</button>
       <button data-activity-filter="working" title="Agent is working right now">Active</button>
       <button data-unread-filter title="Waiting sessions not inspected yet">Unread</button>
+      <button data-priority-filter="lead">Lead</button>
       <button data-priority-filter="p0">P0</button>
       <button data-priority-filter="p1">P1</button>
       <button data-priority-filter="p2">P2</button>
@@ -2930,6 +2949,7 @@
             <div class="mission-facet" role="group" aria-label="Filter timeline labels">
               <span>Label</span>
               <button class="mission-facet-filter on" data-mission-marker="all">All</button>
+              <button class="mission-facet-filter" data-mission-marker="lead">Lead</button>
               <button class="mission-facet-filter" data-mission-marker="p0">P0</button>
               <button class="mission-facet-filter" data-mission-marker="p1">P1</button>
               <button class="mission-facet-filter" data-mission-marker="p2">P2</button>
@@ -2981,6 +3001,7 @@
           <div class="mission-facet" role="group" aria-label="Filter board labels">
             <span>Label</span>
             <button class="mission-facet-filter on" data-mission-marker="all">All</button>
+            <button class="mission-facet-filter" data-mission-marker="lead">Lead</button>
             <button class="mission-facet-filter" data-mission-marker="p0">P0</button>
             <button class="mission-facet-filter" data-mission-marker="p1">P1</button>
             <button class="mission-facet-filter" data-mission-marker="p2">P2</button>
@@ -3044,8 +3065,8 @@
         <button id="btn-mission-control" title="Monitor progress across all active sessions">mission control</button>
         <select id="priority-reminder-select" title="Optional reminders for high-priority sessions that remain waiting and unseen">
           <option value="off">reminders: off</option>
-          <option value="p0">P0 reminder: 10m</option>
-          <option value="p0p1">P0/P1 reminder: 10m</option>
+          <option value="p0">Lead/P0 reminder: 10m</option>
+          <option value="p0p1">Lead/P0/P1 reminder: 10m</option>
         </select>
         <button id="btn-sync-status" title="Read-only workspace sync status" hidden>sync: …</button>
         <button id="btn-open-notes" title="Open daily report (⌘D)">daily report</button>
@@ -3099,6 +3120,7 @@
   const DEFAULT_TERMINAL_THEME = "soft-dark";
   const PANEL_STATE_OPTIONS = [
     ["", "Flag"],
+    ["lead", "Lead"],
     ["p0", "P0"],
     ["p1", "P1"],
     ["p2", "P2"],
@@ -3108,6 +3130,7 @@
   ];
   const PANE_STATE_SHORT_LABELS = {
     "": "F",
+    lead: "Lead",
     p0: "P0",
     p1: "P1",
     p2: "P2",
@@ -3123,7 +3146,7 @@
     ["light", "Light"],
   ];
   const TERMINAL_THEME_VALUES = new Set(TERMINAL_THEME_OPTIONS.map(([value]) => value));
-  const PANEL_STATE_SORT_ORDER = ["p0", "p1", "p2", "blocked", "watching", "done"];
+  const PANEL_STATE_SORT_ORDER = ["lead", "p0", "p1", "p2", "blocked", "watching", "done"];
   const PANE_ACTIVITY_CLASSES = ["busy", "background-working"];
   const PANE_ATTENTION_CLASSES = [
     "attention-ready", "attention-reminder", "attention-needs-input",
@@ -3131,6 +3154,7 @@
   ];
   const SIDEBAR_PRIORITY_FILTERS = [
     ["all", "All"],
+    ["lead", "Lead"],
     ["p0", "P0"],
     ["p1", "P1"],
     ["p2", "P2"],
@@ -3179,6 +3203,7 @@
     if (cwd && PROJECTS_ROOT) cwd.value = PROJECTS_ROOT;
   }
   const SIDEBAR_SESSION_GROUPS = [
+    ["lead", "Lead"],
     ["p0", "P0"],
     ["p1", "P1"],
     ["p2", "P2"],
@@ -3531,6 +3556,10 @@
   // as if it was cleared when the user switches panes quickly.
   const pendingPanelStates = new Map();
   let panelStateMutationSequence = 0;
+  // A resumed remote session can take a few polling intervals to appear in
+  // the federated inventory. Keep its requested pane slot during that gap and
+  // rebuild the grid once the new run becomes visible.
+  const pendingRecoveredSessions = new Map();
 
   function mergePendingPanelStates(nextSessions) {
     for (const session of nextSessions) {
@@ -3570,6 +3599,14 @@
     // returned one complete inventory.
     return !state || state.online !== true
       || state.session_inventory_ready !== true;
+  }
+
+  function retainPendingRecoveredSlot(runId) {
+    const pending = pendingRecoveredSessions.get(runId);
+    if (!pending) return false;
+    if (Number(pending.expiresAt || 0) > Date.now()) return true;
+    pendingRecoveredSessions.delete(runId);
+    return false;
   }
 
   let dashboardInstanceId = "";
@@ -3871,7 +3908,7 @@
 
   function missionMarker(item) {
     const marker = String(item?.panel_state || item?.priority || "").toLowerCase();
-    return ["p0", "p1", "p2", "flag"].includes(marker) ? marker : "";
+    return ["lead", "p0", "p1", "p2", "flag"].includes(marker) ? marker : "";
   }
 
   function missionLifecycleMatches(alive) {
@@ -4169,7 +4206,7 @@
     const end = Number(data.window_end || 0);
     const span = Math.max(1, end - start);
     let rows = data.sessions.filter(missionTimelineRowMatches);
-    const priorityRank = { p0: 0, p1: 1, p2: 2, flag: 3, "": 4 };
+    const priorityRank = { lead: 0, p0: 1, p1: 2, p2: 3, flag: 4, "": 5 };
     const sort = $("mission-timeline-sort").value || "active";
     rows.sort((a, b) => {
       if (sort === "name") return String(a.display_name).localeCompare(String(b.display_name));
@@ -4381,7 +4418,7 @@
     const state = alive ? (raw.state || (s.busy ? "working" : "waiting")) : "ended";
     return {
       state,
-      priority: raw.priority || (["p0", "p1", "p2"].includes(s.panel_state) ? s.panel_state : ""),
+      priority: raw.priority || (["lead", "p0", "p1", "p2"].includes(s.panel_state) ? s.panel_state : ""),
       marker: missionMarker(s),
       lifecycle: alive ? "active" : "ended",
       needs_attention: alive && raw.needs_attention === true,
@@ -4454,7 +4491,7 @@
       return query.split(/\s+/).every(part => bag.includes(part));
     });
 
-    const priorityRank = { p0: 0, p1: 1, p2: 2, flag: 3, "": 4 };
+    const priorityRank = { lead: 0, p0: 1, p1: 2, p2: 3, flag: 4, "": 5 };
     const stateRank = { blocked: 0, needs_input: 1, working: 2, waiting: 3, completed: 4, ended: 5 };
     const sort = $("mission-sort").value || "attention";
     rows.sort((a, b) => {
@@ -4838,7 +4875,7 @@
   //   - One notification when a working session becomes waiting.
   //   - Remaining idle never produces another default notification.
   //   - A new busy spell arms the next working -> waiting transition.
-  // Optional P0/P1 reminders are a separate, explicit opt-in. They repeat
+  // Optional Lead/P0/P1 reminders are a separate, explicit opt-in. They repeat
   // every ten minutes only while a high-priority session remains unseen.
   //   - When the user enables notifications OR the page first loads,
   //     we treat every existing session as "just notified" so we don't
@@ -4996,8 +5033,10 @@
 
     function reminderEligible(s) {
       const priority = String(s?.panel_state || "").toLowerCase();
-      if (reminderMode === "p0") return priority === "p0";
-      if (reminderMode === "p0p1") return priority === "p0" || priority === "p1";
+      if (reminderMode === "p0") return priority === "lead" || priority === "p0";
+      if (reminderMode === "p0p1") {
+        return priority === "lead" || priority === "p0" || priority === "p1";
+      }
       return false;
     }
 
@@ -5532,6 +5571,17 @@
         }
         updatePanelActivity(sessions);
         const byId = new Map(sessions.map(s => [s.run_id, s]));
+        let recoveredPaneAppeared = false;
+        const recoveredZoomIds = [];
+        for (const [runId, pending] of pendingRecoveredSessions) {
+          if (byId.has(runId)) {
+            pendingRecoveredSessions.delete(runId);
+            recoveredPaneAppeared = true;
+            if (pending.zoom) recoveredZoomIds.push(runId);
+          } else if (Number(pending.expiresAt || 0) <= Date.now()) {
+            pendingRecoveredSessions.delete(runId);
+          }
+        }
         for (const [id, ctrl] of paneCtrls) {
           const fresh = byId.get(id);
           if (fresh) updatePaneHeader(ctrl, fresh);
@@ -5563,13 +5613,20 @@
         let changed = false;
         for (let i = 0; i < slots.length; i++) {
           if (slots[i] && !alive.has(slots[i])
+              && !retainPendingRecoveredSlot(slots[i])
               && !retainMissingRemoteSlot(slots[i], remoteNodeStates)) {
             slots[i] = null;
             changed = true;
           }
         }
-        if (changed) { saveSlots(); renderGrid(); }
-        else if (firstSnapshot) renderGrid();
+        if (changed) saveSlots();
+        if (changed || recoveredPaneAppeared || firstSnapshot) renderGrid();
+        for (const runId of recoveredZoomIds) {
+          requestAnimationFrame(() => {
+            const ctrl = paneCtrls.get(runId);
+            if (ctrl?.cardEl) openPaneZoom(ctrl.cardEl);
+          });
+        }
         return;  // success
       } catch (e) {
         lastErr = e;
@@ -5633,8 +5690,9 @@
         s.mission_control.activity_source = native.source || "";
         const persistentAttention = sessionPersistentAttentionState(s);
         s.mission_control.needs_attention = !!persistentAttention;
+        const attentionLabel = String(s.panel_state || "session").toUpperCase();
         s.mission_control.attention_reason = persistentAttention === "needs-input"
-          ? "P0 is waiting for your input"
+          ? `${attentionLabel} is waiting for your input`
           : persistentAttention === "reminder" ? "P1 has been idle" : "";
       }
       if (before !== after) {
@@ -5736,7 +5794,9 @@
     const priorityOverdue = waiting && (
       mission.needs_attention === true || waitingAge >= 5 * 60
     );
-    if (priorityOverdue && priority === "p0") return "needs-input";
+    if (priorityOverdue && (priority === "lead" || priority === "p0")) {
+      return "needs-input";
+    }
     if (priorityOverdue && priority === "p1") return "reminder";
     return "";
   }
@@ -5826,6 +5886,11 @@
     if (endSession) {
       endSession.hidden = !(s.alive && s.agent_exited === true);
       endSession.disabled = !!(s.remote && s.node_online === false);
+    }
+    const recoverSession = card.querySelector(".btn-recover-session");
+    if (recoverSession) {
+      recoverSession.hidden = !(s.alive && s.agent_exited === true);
+      recoverSession.disabled = !!(s.remote && s.node_online === false);
     }
     updatePanelStateSelect(ctrl, s.panel_state || "");
     applyPaneTerminalTheme(ctrl, s);
@@ -6874,6 +6939,7 @@
           <button class="btn-zoom" title="Open a larger pane view">⛶</button>
           <button class="btn-reload" title="Reconnect this pane (if display is glitchy)">↻</button>
           <button class="btn-folders" title="Linked task files and folders">files</button>
+          <button class="btn-recover-session" ${s.agent_exited === true ? "" : "hidden"} title="Resume this exited agent in a new session">▶</button>
           <button class="btn-end-session" ${s.agent_exited === true ? "" : "hidden"} title="End this exited session and keep its resume metadata">⏻</button>
           <button class="btn-unpin" title="Close this pane">×</button>
         </div>
@@ -6929,6 +6995,7 @@
     const btnZoom = card.querySelector(".btn-zoom");
     const btnReload = card.querySelector(".btn-reload");
     const btnFolders = card.querySelector(".btn-folders");
+    const btnRecoverSession = card.querySelector(".btn-recover-session");
     const btnEndSession = card.querySelector(".btn-end-session");
     const btnUnpin = card.querySelector(".btn-unpin");
 
@@ -6955,6 +7022,7 @@
     themeSelect.disabled = !["task", "run"].includes(s.kind);
     const linkedCount = (s.linked_folders || []).length;
     btnFolders.textContent = linkedCount ? `files ${linkedCount}` : "files";
+    btnRecoverSession.disabled = !!(s.remote && s.node_online === false);
     btnEndSession.disabled = !!(s.remote && s.node_online === false);
 
     // Wire actions
@@ -7123,6 +7191,9 @@
       }
     });
     btnFolders.addEventListener("click", () => openFolderViewer(runId));
+    btnRecoverSession.addEventListener("click", () => recoverExitedSession(
+      runId, btnRecoverSession, btnEndSession
+    ));
     btnEndSession.addEventListener("click", () => endExitedSession(runId, btnEndSession));
     btnUnpin.addEventListener("click", () => {
       if (paneZoomState && paneZoomState.card === card) {
@@ -8031,6 +8102,70 @@
     } catch (e) { alert("force kill failed: " + e.message); }
   }
 
+  async function recoverExitedSession(runId, button, endButton) {
+    const s = sessions.find(x => x.run_id === runId);
+    if (!s || !s.alive || s.agent_exited !== true) return;
+    const name = s.display_name || s.task || s.run_name || "session";
+    const oldSlot = slotOf(runId);
+    const ctrl = paneCtrls.get(runId);
+    const wasZoomed = !!(paneZoomState && ctrl && paneZoomState.card === ctrl.cardEl);
+    const previousText = button ? button.textContent : "▶";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "…";
+      button.title = `Recovering ${name}…`;
+    }
+    if (endButton) endButton.disabled = true;
+    try {
+      const stopped = await api(
+        `/api/sessions/${encodeURIComponent(runId)}/stop`,
+        { method: "POST" },
+      );
+      if (!stopped.ok) {
+        if (!stopped.needs_force) {
+          throw new Error(stopped.reason || "could not end the exited wrapper");
+        }
+        const forced = await api(
+          `/api/sessions/${encodeURIComponent(runId)}/kill`,
+          { method: "POST" },
+        );
+        if (!forced?.ok) throw new Error("could not close the exited wrapper");
+      }
+
+      const nodeId = s.remote
+        ? (s.node_id || remoteNodeIdFromRunId(runId))
+        : "local";
+      const resumed = await api("/api/resume", {
+        method: "POST",
+        body: { run_id: runId, node_id: nodeId, mode: "background" },
+      });
+      const newRunId = String(resumed?.run_id || "");
+      if (!newRunId) throw new Error("resume succeeded without a new run id");
+
+      pendingRecoveredSessions.set(newRunId, {
+        expiresAt: Date.now() + 30000,
+        zoom: wasZoomed,
+      });
+      if (oldSlot >= 0) slots[oldSlot] = newRunId;
+      closePane(runId);
+      saveSlots();
+      renderList();
+      renderGrid();
+      $("conn-status").textContent = `Resumed ${name}; waiting for the new pane…`;
+      setTimeout(() => void refreshList(), s.remote ? 500 : 200);
+    } catch (e) {
+      alert("recover session failed: " + e.message);
+      setTimeout(() => void refreshList(), 250);
+    } finally {
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.textContent = previousText;
+        button.title = "Resume this exited agent in a new session";
+      }
+      if (endButton && endButton.isConnected) endButton.disabled = false;
+    }
+  }
+
   async function endExitedSession(runId, button) {
     const s = sessions.find(x => x.run_id === runId);
     if (!s || !s.alive || s.agent_exited !== true) return;
@@ -8177,7 +8312,7 @@
   $("btn-refresh").addEventListener("click", refreshList);
   idleNotif.attach($("btn-notif"), $("priority-reminder-select"));
   // Looking at or interacting with a pane acknowledges its current waiting
-  // episode, so opt-in P0/P1 reminders stop until that agent works again.
+  // episode, so opt-in Lead/P0/P1 reminders stop until that agent works again.
   $("grid").addEventListener("pointerdown", (event) => {
     const card = event.target.closest?.(".pane-card[data-run-id]");
     if (card?.dataset.runId) idleNotif.acknowledge(card.dataset.runId);

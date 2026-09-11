@@ -393,6 +393,46 @@ class CodexNativeActivityTests(unittest.TestCase):
                 "P0 has been idle",
             )
 
+    def test_overdue_lead_waiting_state_keeps_mission_attention(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = NativeActivityService(
+                store=NativeActivityStore(root / "activity.sqlite3"),
+            )
+            row = {
+                "run_id": "run::waiting-lead",
+                "agent": "codex",
+                "resume_id": "session-id",
+                "alive": True,
+                "busy": False,
+                "panel_state": "lead",
+                "mission_control": {
+                    "state": "waiting",
+                    "priority": "lead",
+                    "activity_mode": "idle",
+                    "needs_attention": False,
+                    "attention_reason": "",
+                },
+            }
+            service.register_runs([row])
+            service._set_state(
+                ("codex", "session-id"),
+                "waiting_user",
+                source="codex-transcript",
+                reason="Turn complete",
+                at=time.time() - 360.0,
+            )
+
+            rendered = service.apply([dict(row)])[0]
+
+            self.assertFalse(rendered["busy"])
+            self.assertEqual(rendered["mission_control"]["state"], "waiting")
+            self.assertTrue(rendered["mission_control"]["needs_attention"])
+            self.assertEqual(
+                rendered["mission_control"]["attention_reason"],
+                "LEAD has been idle",
+            )
+
     def test_background_work_stays_active_when_native_hook_is_waiting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

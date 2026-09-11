@@ -3951,9 +3951,11 @@ def _mission_control_payload(
         idle_since = last_sustained or started_ts
         activity_age = max(0.0, now - idle_since) if idle_since else 0.0
     session_age = max(0.0, now - started_ts) if started_ts else 0.0
-    priority = panel_state if panel_state in {"p0", "p1", "p2"} else ""
+    priority = panel_state if panel_state in {"lead", "p0", "p1", "p2"} else ""
     needs_attention = state in {"blocked", "needs_input"} or (
-        state == "waiting" and priority in {"p0", "p1"} and activity_age >= 300
+        state == "waiting"
+        and priority in {"lead", "p0", "p1"}
+        and activity_age >= 300
     )
     attention_reason = ""
     if state == "blocked":
@@ -6464,7 +6466,16 @@ ALLOWED_STATE_FIELDS = {
     "max_rounds",
     "idle_timeout",
 }
-ALLOWED_PANEL_STATES = {"", "p0", "p1", "p2", "blocked", "watching", "done"}
+ALLOWED_PANEL_STATES = {
+    "",
+    "lead",
+    "p0",
+    "p1",
+    "p2",
+    "blocked",
+    "watching",
+    "done",
+}
 ALLOWED_TERMINAL_THEMES = {"", "soft-dark", "soft-light", "soft-green", "light"}
 
 
@@ -9681,6 +9692,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         linked_copy = _copy_linked_folders_to_spawned_run(
             outputs_dir, src, result, exclude_run_id=run_id,
             resume_id=resume_id, label=label)
+        ui_copy = _copy_snapshot_ui_metadata_to_spawned_run(result, src)
         return {
             **result,
             "resumed_from": run_id,
@@ -9688,6 +9700,10 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "linked_folders_copied": linked_copy.get("copied", 0),
             "linked_folders_run_dir": linked_copy.get("run_dir", ""),
             "linked_folders_warning": linked_copy.get("warning", ""),
+            "ui_metadata_copied": ui_copy.get("copied", False),
+            "panel_state": ui_copy.get("panel_state", ""),
+            "terminal_theme": ui_copy.get("terminal_theme", ""),
+            "ui_metadata_warning": ui_copy.get("warning", ""),
         }
 
     @app.post("/api/organize")
