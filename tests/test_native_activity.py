@@ -232,6 +232,87 @@ class ClaudePermissionPolicyTests(unittest.TestCase):
 
 
 class CodexNativeActivityTests(unittest.TestCase):
+    def test_claude_prompt_overrides_stale_working_hook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = NativeActivityService(
+                store=NativeActivityStore(root / "activity.sqlite3"),
+            )
+            row = {
+                "run_id": "run::claude-ready",
+                "agent": "claude",
+                "resume_id": "session-id",
+                "alive": True,
+                "busy": False,
+                "activity_sustained_active": False,
+                "background_active": False,
+                "terminal_prompt_ready": True,
+                "activity_last_change_age_s": 600.0,
+                "panel_state": "p0",
+                "mission_control": {
+                    "state": "working",
+                    "priority": "p0",
+                    "activity_mode": "busy",
+                    "needs_attention": False,
+                    "attention_reason": "",
+                    "progress": {"goal_state": ""},
+                },
+            }
+            service.register_runs([row])
+            service._set_state(
+                ("claude", "session-id"),
+                "working",
+                source="claude-hook",
+                event="UserPromptSubmit",
+                reason="Prompt submitted",
+                at=time.time() - 900.0,
+            )
+
+            rendered = service.apply([dict(row)])[0]
+
+            self.assertFalse(rendered["busy"])
+            self.assertEqual(rendered["native_activity"]["state"], "waiting_user")
+            self.assertEqual(
+                rendered["native_activity"]["source"], "terminal-prompt"
+            )
+            self.assertEqual(rendered["mission_control"]["state"], "waiting")
+            self.assertTrue(rendered["mission_control"]["needs_attention"])
+
+    def test_claude_goal_keeps_working_at_interactive_prompt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = NativeActivityService(
+                store=NativeActivityStore(root / "activity.sqlite3"),
+            )
+            row = {
+                "run_id": "run::claude-goal",
+                "agent": "claude",
+                "resume_id": "session-id",
+                "alive": True,
+                "busy": False,
+                "activity_sustained_active": False,
+                "background_active": False,
+                "terminal_prompt_ready": True,
+                "mission_control": {
+                    "state": "working",
+                    "activity_mode": "busy",
+                    "progress": {"goal_state": "pursuing"},
+                },
+            }
+            service.register_runs([row])
+            service._set_state(
+                ("claude", "session-id"),
+                "working",
+                source="claude-hook",
+                event="UserPromptSubmit",
+            )
+
+            rendered = service.apply([dict(row)])[0]
+
+            self.assertTrue(rendered["busy"])
+            self.assertEqual(rendered["native_activity"]["state"], "working")
+            self.assertEqual(rendered["mission_control"]["state"], "working")
+
     def test_claude_goal_active_overrides_stale_waiting_hook(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

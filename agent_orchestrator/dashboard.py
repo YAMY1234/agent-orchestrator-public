@@ -3779,6 +3779,29 @@ def _detect_detached_shell(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _detect_claude_prompt_ready(text: str) -> bool:
+    """Return true when the current Claude TUI is visibly accepting input.
+
+    A Claude hook can occasionally miss the matching ``Stop`` event (for
+    example across an update or a forked sub-agent).  In that case the last
+    stored lifecycle event remains ``UserPromptSubmit`` forever even though
+    the live pane has returned to its prompt.  Restrict this fallback to the
+    distinctive prompt plus the nearby ``... mode on`` footer so an old prompt
+    elsewhere in scrollback cannot end a genuinely running turn.
+    """
+    lines = [_mission_clean_line(line) for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    tail = lines[-8:]
+    for mode_index in range(len(tail) - 1, -1, -1):
+        if not re.search(r"\bmode\s+on\b", tail[mode_index], re.I):
+            continue
+        for prompt_line in tail[max(0, mode_index - 3):mode_index]:
+            if prompt_line.lstrip().startswith("❯"):
+                return True
+        return False
+    return False
+
+
 _MISSION_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MISSION_EXPLICIT_PROGRESS_RE = re.compile(
     r"(?:^|\s)\[(?P<current>\d{1,4})/(?P<total>\d{1,4})\]\s*(?P<label>.*)$"
@@ -4619,6 +4642,7 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "detached_shell_running": False,
         "detached_shell_reason": "",
         "agent_exited": False,
+        "terminal_prompt_ready": False,
         "terminal_progress": _extract_terminal_progress(""),
     }
     if not session:
@@ -4686,6 +4710,7 @@ def _probe_session_activity(session: str) -> dict[str, Any]:
         "detached_shell_running": detached_shell_running,
         "detached_shell_reason": detached_shell_reason,
         "agent_exited": agent_exited,
+        "terminal_prompt_ready": _detect_claude_prompt_ready(text),
         "terminal_progress": _extract_terminal_progress(text),
     }
 

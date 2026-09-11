@@ -1616,6 +1616,21 @@ Please approve the remote login
         self.assertEqual(payload["state"], "working")
         self.assertFalse(payload["needs_attention"])
 
+    def test_detects_only_current_claude_input_prompt(self):
+        ready = dashboard._detect_claude_prompt_ready("""
+✶ Considering… (1m 43s · thinking)
+────────────────────────────────────
+❯
+────────────────────────────────────
+⏸ manual mode on · ? for shortcuts · ← 1 agent
+""")
+        running = dashboard._detect_claude_prompt_ready("""
+❯ an earlier user request
+✶ Considering… (4s · esc to interrupt)
+""")
+        self.assertTrue(ready)
+        self.assertFalse(running)
+
     def test_timeline_v1_completed_segments_migrate_to_waiting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             outputs = Path(temp_dir) / "outputs"

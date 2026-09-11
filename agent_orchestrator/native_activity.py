@@ -675,26 +675,55 @@ class NativeActivityService:
             if not native:
                 continue
             native["age_s"] = round(max(0.0, now - float(native.get("since") or now)), 3)
-            row["native_activity"] = native
             state = str(native.get("state") or "")
             background_active = bool(row.get("background_active"))
             terminal_active = background_active or bool(
                 row.get("activity_sustained_active")
             )
+            mission = row.get("mission_control")
+            progress = (
+                mission.get("progress")
+                if isinstance(mission, dict)
+                and isinstance(mission.get("progress"), dict)
+                else {}
+            )
+            goal_active = str(progress.get("goal_state") or "") == "pursuing"
+            # The live Claude input prompt is stronger evidence than a stale
+            # UserPromptSubmit hook.  This fixes sessions that spin forever
+            # when Claude misses Stop, while explicit goals, background work,
+            # and sustained output continue to win.
+            if (
+                agent == "claude"
+                and state in _WORKING_STATES
+                and row.get("terminal_prompt_ready") is True
+                and not terminal_active
+                and not goal_active
+            ):
+                try:
+                    prompt_age = max(
+                        0.0, float(row.get("activity_last_change_age_s") or 0.0)
+                    )
+                except (TypeError, ValueError):
+                    prompt_age = 0.0
+                prompt_since = now - prompt_age
+                native.update({
+                    "state": "waiting_user",
+                    "since": prompt_since,
+                    "age_s": round(prompt_age, 3),
+                    "event": "PromptReady",
+                    "reason": "Claude is ready for input",
+                    "source": "terminal-prompt",
+                })
+                state = "waiting_user"
+            row["native_activity"] = native
             effectively_working = state in _WORKING_STATES or terminal_active
             if effectively_working:
                 row["busy"] = True
             elif state in _WAITING_STATES:
                 row["busy"] = False
                 row["screen_busy"] = False
-            mission = row.get("mission_control")
             if isinstance(mission, dict) and mission:
                 original_mission_state = str(mission.get("state") or "")
-                progress = (
-                    mission.get("progress")
-                    if isinstance(mission.get("progress"), dict) else {}
-                )
-                goal_active = str(progress.get("goal_state") or "") == "pursuing"
                 priority = str(
                     mission.get("priority") or row.get("panel_state") or ""
                 ).lower()
