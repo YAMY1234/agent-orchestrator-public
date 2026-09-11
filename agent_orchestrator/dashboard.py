@@ -5913,6 +5913,9 @@ def _discover_runs_unlocked(
             r["detached_shell_running"] = bool(activity.get("detached_shell_running"))
             r["detached_shell_reason"] = activity.get("detached_shell_reason", "")
             r["agent_exited"] = bool(activity.get("agent_exited"))
+            r["terminal_prompt_ready"] = bool(
+                activity.get("terminal_prompt_ready")
+            )
             now = time.time()
             changed_ts = _SESSION_LAST_CHANGE.get(sess, 0.0)
             streak_ts = _SESSION_ACTIVITY_STREAK_START.get(sess, 0.0)
@@ -5957,6 +5960,7 @@ def _discover_runs_unlocked(
             r["detached_shell_running"] = False
             r["detached_shell_reason"] = ""
             r["agent_exited"] = False
+            r["terminal_prompt_ready"] = False
             r["activity_last_change_at"] = ""
             r["activity_last_change_age_s"] = None
             r["activity_streak_started_at"] = ""
