@@ -462,6 +462,12 @@ class DashboardSidebarLocationGroupingContractTests(unittest.TestCase):
         self.assertIn("/reconnect/continue", self.source)
         self.assertIn("/reconnect/cancel", self.source)
 
+    def test_reconnect_offers_explicit_snapshot_recovery(self):
+        self.assertIn('id="reconnect-recovery"', self.source)
+        self.assertIn('id="reconnect-restore"', self.source)
+        self.assertIn("async function loadNodeRecoveryStatus", self.source)
+        self.assertIn("/active-snapshot/restore", self.source)
+
     def test_remote_reconnect_status_polling_is_serial_and_bounded(self):
         self.assertIn("function scheduleNodeReconnectPoll", self.source)
         self.assertIn("const controller = new AbortController();", self.source)
@@ -972,6 +978,35 @@ class SessionSnapshotTests(unittest.TestCase):
         self.assertEqual(ready["sessions"], [{"run_id": "demo::task"}])
         self.assertEqual(len(calls), 1)
 
+    def test_foreign_backend_empty_autosave_preserves_recovery_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir)
+            original = {
+                "schema_version": 3,
+                "backend_id": "previous-backend",
+                "sessions": [{"resume_id": "resume-me"}],
+            }
+            dashboard._active_snapshot_path(outputs).write_text(json.dumps(original))
+            empty = {
+                "schema_version": 3,
+                "backend_id": "current-backend",
+                "sessions": [],
+            }
+            with patch.object(
+                dashboard, "_build_active_snapshot", return_value=empty
+            ):
+                _, result = dashboard._save_active_snapshot(
+                    outputs,
+                    saved_by="auto-hourly",
+                    preserve_foreign_nonempty=True,
+                )
+
+            self.assertTrue(result["write_skipped"])
+            self.assertEqual(
+                json.loads(dashboard._active_snapshot_path(outputs).read_text()),
+                original,
+            )
+
 
 class ConversationMetricBackgroundTests(unittest.TestCase):
     def test_followup_snapshot_does_not_wait_for_cold_background_parse(self):
@@ -1034,6 +1069,7 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertEqual(health.json()["bind_host"], "127.0.0.1")
             self.assertEqual(health.json()["scheme"], "http")
             self.assertTrue(health.json()["instance_id"])
+            self.assertTrue(health.json()["backend_id"])
             self.assertEqual(client.get("/api/sessions").status_code, 401)
             self.assertEqual(client.get("/tty/missing").status_code, 401)
 
@@ -1045,6 +1081,9 @@ class DashboardAuthenticationTests(unittest.TestCase):
             self.assertEqual(sessions.status_code, 200)
             self.assertEqual(
                 sessions.json()["instance_id"], health.json()["instance_id"]
+            )
+            self.assertEqual(
+                sessions.json()["backend_id"], health.json()["backend_id"]
             )
             self.assertIn("remote_nodes", sessions.json())
 

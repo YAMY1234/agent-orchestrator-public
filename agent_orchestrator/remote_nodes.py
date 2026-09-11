@@ -363,6 +363,7 @@ class RemoteNodeRegistry:
                 "last_seen_at": 0.0,
                 "error": "not connected",
                 "remote_instance_id": "",
+                "remote_backend_id": "",
                 "projects_root": node.projects_root,
             }
             for node in self.settings
@@ -456,6 +457,7 @@ class RemoteNodeRegistry:
                     state.get("projects_root") or node.projects_root
                 ),
                 "remote_instance_id": str(state.get("remote_instance_id") or ""),
+                "remote_backend_id": str(state.get("remote_backend_id") or ""),
                 "reconnect_enabled": bool(node.reconnect.enabled),
                 "tunnel": self._tunnels[node.id].status(),
             })
@@ -576,6 +578,10 @@ class RemoteNodeRegistry:
             "remote_instance_id": str(
                 sessions_payload.get("instance_id")
                 or health.get("instance_id") or ""
+            ),
+            "remote_backend_id": str(
+                sessions_payload.get("backend_id")
+                or health.get("backend_id") or ""
             ),
             "projects_root": projects_root,
             "native_activity": native if isinstance(native, list) else [],

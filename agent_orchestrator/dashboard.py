@@ -1160,6 +1160,12 @@ _ACTIVE_SNAPSHOT_LOCK = threading.Lock()
 _ACTIVE_SNAPSHOT_AUTOSAVE_DEFAULT_SECONDS = 3600.0
 
 
+def _runtime_backend_id() -> str:
+    """Return a stable, non-identifying id for the machine running Dashboard."""
+    identity = os.environ.get("ORCH_BACKEND_ID", "").strip() or socket.gethostname()
+    return hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
 def _active_snapshot_autosave_enabled() -> bool:
     raw = os.environ.get("ORCH_ACTIVE_SNAPSHOT_AUTOSAVE", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
@@ -2938,6 +2944,7 @@ def _build_active_snapshot(
         "schema_version": 3,
         "saved_at": _iso_now(),
         "saved_by": saved_by,
+        "backend_id": _runtime_backend_id(),
         "layout": layout_name,
         "slots": snapshot_slots,
         "sessions": sessions_out,
@@ -2954,6 +2961,7 @@ def _save_active_snapshot(
     layout_name: str = "",
     slot_ids: list[str] | None = None,
     saved_by: str = "manual",
+    preserve_foreign_nonempty: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     with _ACTIVE_SNAPSHOT_LOCK:
         previous = _load_active_snapshot(outputs_dir)
@@ -2965,6 +2973,21 @@ def _save_active_snapshot(
             previous_snapshot=previous,
         )
         path = _active_snapshot_path(outputs_dir)
+        previous_sessions = previous.get("sessions")
+        previous_backend = str(previous.get("backend_id") or "")
+        if (preserve_foreign_nonempty
+                and isinstance(previous_sessions, list) and previous_sessions
+                and not snapshot.get("sessions")
+                and previous_backend
+                and previous_backend != snapshot.get("backend_id")):
+            # Shared outputs can be mounted by several login backends while
+            # tmux remains host-local.  A fresh backend initially sees zero
+            # live tmux sessions; do not let its periodic autosave erase the
+            # last recoverable snapshot from the previous backend.
+            preserved = copy.deepcopy(previous)
+            preserved["write_skipped"] = True
+            preserved["write_skip_reason"] = "foreign backend has no live sessions"
+            return path, preserved
         _safe_write_json(path, snapshot)
         return path, snapshot
 
@@ -7221,17 +7244,26 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                         path, snapshot = _save_active_snapshot(
                             outputs_dir,
                             saved_by="auto-hourly",
+                            preserve_foreign_nonempty=True,
                         )
                         sessions = snapshot.get("sessions") if isinstance(
                             snapshot.get("sessions"), list) else []
                         skipped = snapshot.get("skipped") if isinstance(
                             snapshot.get("skipped"), list) else []
-                        print(
-                            "INFO: active snapshot autosaved "
-                            f"{len(sessions)} session(s), skipped {len(skipped)} -> {path}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                        if snapshot.get("write_skipped"):
+                            print(
+                                "INFO: active snapshot preserved: "
+                                f"{snapshot.get('write_skip_reason')} -> {path}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                "INFO: active snapshot autosaved "
+                                f"{len(sessions)} session(s), skipped {len(skipped)} -> {path}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
                     except Exception as exc:
                         print(
                             f"WARNING: active snapshot autosave failed: {exc}",
@@ -7515,6 +7547,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "port": port,
             "scheme": scheme,
             "instance_id": dashboard_instance_id,
+            "backend_id": _runtime_backend_id(),
             "active_snapshot_autosave": {
                 "enabled": bool(app.state.active_snapshot_autosave_enabled),
                 "interval_seconds": app.state.active_snapshot_autosave_interval,
@@ -7565,6 +7598,78 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             ],
             "updated_at": time.time(),
         }
+
+    @app.get("/api/nodes/{node_id}/recovery")
+    async def remote_node_recovery(node_id: str):
+        """Describe saved sessions that are not live on this remote backend."""
+        node = remote_nodes.get(node_id)
+        if node is None:
+            raise HTTPException(404, "remote node not found")
+        health = await _remote_json(node, "/api/health")
+        snapshot = await _remote_json(node, "/api/active-snapshot")
+        current = await _remote_json(node, "/api/sessions")
+        inventory = current.get("snapshot") if isinstance(current, dict) else {}
+        inventory_ready = (
+            not isinstance(inventory, dict) or inventory.get("ready") is not False
+        )
+        current_rows = current.get("sessions") if isinstance(current, dict) else []
+        active_resume_ids = {
+            str(row.get("resume_id") or "")
+            for row in current_rows
+            if (isinstance(row, dict) and row.get("alive")
+                and row.get("resume_id"))
+        }
+        saved_rows = snapshot.get("sessions") if isinstance(snapshot, dict) else []
+        recoverable = [
+            row for row in saved_rows
+            if (isinstance(row, dict)
+                and str(row.get("resume_id") or "") not in active_resume_ids)
+        ]
+        current_backend = str(
+            (health.get("backend_id") if isinstance(health, dict) else "")
+            or (current.get("backend_id") if isinstance(current, dict) else "")
+            or ""
+        )
+        saved_backend = str(
+            (snapshot.get("backend_id") if isinstance(snapshot, dict) else "")
+            or ""
+        )
+        return {
+            "ok": True,
+            "ready": bool(inventory_ready),
+            "backend_changed": bool(
+                current_backend and saved_backend
+                and current_backend != saved_backend
+            ),
+            "current_backend_id": current_backend,
+            "saved_backend_id": saved_backend,
+            "saved_at": snapshot.get("saved_at", "") if isinstance(snapshot, dict) else "",
+            "snapshot_session_count": len(saved_rows),
+            "recoverable_count": len(recoverable) if inventory_ready else 0,
+            "recoverable_sessions": recoverable if inventory_ready else [],
+        }
+
+    @app.post("/api/nodes/{node_id}/active-snapshot/restore")
+    async def restore_remote_active_snapshot(node_id: str, request: Request):
+        """Explicitly restore a remote node snapshot; never runs automatically."""
+        node = remote_nodes.get(node_id)
+        if node is None:
+            raise HTTPException(404, "remote node not found")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        result = await _remote_json(
+            node,
+            "/api/active-snapshot/restore",
+            method="POST",
+            body={
+                "mode": str(body.get("mode") or "background"),
+                "skip_existing": body.get("skip_existing", True),
+            },
+        )
+        remote_nodes.request_refresh()
+        return result
 
     @app.get("/api/nodes/{node_id}/reconnect")
     def remote_node_reconnect_status(node_id: str):
@@ -8123,6 +8228,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         return {
             "sessions": sessions,
             "instance_id": dashboard_instance_id,
+            "backend_id": _runtime_backend_id(),
             # A remote node can be temporarily absent while its SSH tunnel is
             # still reconnecting after a dashboard restart.  The browser uses
             # this snapshot to retain those pane slots instead of treating the
@@ -9290,6 +9396,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             "ok": bool(snapshot),
             "snapshot_path": str(_active_snapshot_path(outputs_dir)),
             "saved_at": snapshot.get("saved_at", ""),
+            "backend_id": snapshot.get("backend_id", ""),
             "layout": snapshot.get("layout", ""),
             "session_count": len(sessions),
             "sessions": sessions,

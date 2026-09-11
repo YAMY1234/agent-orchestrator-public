@@ -1168,6 +1168,14 @@
     color: var(--warn); font-size: 11px; line-height: 1.45;
     white-space: pre-line;
   }
+  .reconnect-recovery {
+    padding: 10px 12px; border: 1px solid var(--accent);
+    border-radius: 7px; background: rgba(88,166,255,0.08);
+    color: var(--text); font-size: 12px; line-height: 1.5;
+  }
+  .reconnect-recovery.migration {
+    border-color: var(--warn); background: rgba(210,153,34,0.08);
+  }
   @media (max-width: 620px) {
     .reconnect-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
@@ -2799,10 +2807,12 @@
           <button class="btn-secondary" id="reconnect-copy" hidden>Copy code</button>
         </div>
         <div class="reconnect-warnings" id="reconnect-warnings" hidden></div>
+        <div class="reconnect-recovery" id="reconnect-recovery" hidden></div>
       </div>
       <div class="modal-foot">
         <button class="btn-secondary" id="reconnect-cancel" hidden>Cancel reconnect</button>
         <button class="btn-primary" id="reconnect-continue" hidden>I've verified · Continue</button>
+        <button class="btn-primary" id="reconnect-restore" hidden>Restore saved sessions</button>
         <button class="btn-secondary" id="reconnect-close-2">Close</button>
       </div>
     </div>
@@ -11086,6 +11096,8 @@
   let reconnectStatusPhase = "idle";
   let reconnectResumeOnFocus = false;
   let reconnectContinueInFlight = false;
+  let reconnectRecoveryTimer = null;
+  let reconnectRecoveryState = null;
 
   function reconnectStageIndex(step) {
     return ({
@@ -11162,6 +11174,53 @@
     reconnectRetryTimer = null;
   }
 
+  function resetNodeRecovery() {
+    if (reconnectRecoveryTimer) clearTimeout(reconnectRecoveryTimer);
+    reconnectRecoveryTimer = null;
+    reconnectRecoveryState = null;
+    $("reconnect-recovery").hidden = true;
+    $("reconnect-recovery").textContent = "";
+    $("reconnect-recovery").classList.remove("migration");
+    $("reconnect-restore").hidden = true;
+    $("reconnect-restore").disabled = false;
+  }
+
+  async function loadNodeRecoveryStatus(attempt = 0) {
+    if (!reconnectNodeId || $("reconnect-modal").hidden) return;
+    try {
+      const recovery = await api(
+        `/api/nodes/${encodeURIComponent(reconnectNodeId)}/recovery`
+      );
+      if (!recovery?.ready && attempt < 8) {
+        reconnectRecoveryTimer = setTimeout(
+          () => void loadNodeRecoveryStatus(attempt + 1), 1000
+        );
+        return;
+      }
+      reconnectRecoveryState = recovery;
+      const count = Number(recovery?.recoverable_count || 0);
+      if (!count) return;
+      const names = (recovery.recoverable_sessions || [])
+        .slice(0, 3)
+        .map(row => row.display_name || row.task || row.run_name)
+        .filter(Boolean);
+      const more = count > names.length ? ` and ${count - names.length} more` : "";
+      const prefix = recovery.backend_changed
+        ? "This Dashboard is running on a different backend."
+        : "Some saved sessions are not running.";
+      const detail = names.length ? ` ${names.join(", ")}${more}.` : "";
+      const box = $("reconnect-recovery");
+      box.textContent = `${prefix} ${count} session${count === 1 ? " is" : "s are"} ready to restore.${detail}`;
+      box.hidden = false;
+      box.classList.toggle("migration", !!recovery.backend_changed);
+      $("reconnect-restore").textContent = `Restore ${count} saved session${count === 1 ? "" : "s"}`;
+      $("reconnect-restore").hidden = false;
+    } catch (_) {
+      // Reconnect itself succeeded; a delayed inventory scan should not turn
+      // that success into an error. The normal refresh remains available.
+    }
+  }
+
   function retryableNodeReconnectFailure(status) {
     if (String(status?.phase || "") !== "failed") return false;
     return /connection refused|operation timed out|connection timed out|no route to host/i
@@ -11220,6 +11279,7 @@
         stopNodeReconnectPolling();
         if (status.phase === "succeeded") {
           stopNodeReconnectRetry();
+          void loadNodeRecoveryStatus();
         } else if (status.phase === "failed" && scheduleNodeReconnectRetry(status)) {
           return;
         }
@@ -11260,6 +11320,7 @@
     if (!reconnectNodeId) return;
     reconnectChallengeKey = "";
     reconnectResumeOnFocus = false;
+    resetNodeRecovery();
     stopNodeReconnectRetry();
     $("reconnect-modal").hidden = false;
     renderNodeReconnectStatus({
@@ -11289,6 +11350,7 @@
     $("reconnect-modal").hidden = true;
     stopNodeReconnectPolling();
     stopNodeReconnectRetry();
+    resetNodeRecovery();
   }
 
   $("reconnect-close").addEventListener("click", closeNodeReconnectModal);
@@ -11349,6 +11411,35 @@
       if (!reconnectPollTimer) scheduleNodeReconnectPoll(500);
     } catch (error) {
       alert("Cancel reconnect failed:\n" + error.message);
+    }
+  });
+  $("reconnect-restore").addEventListener("click", async () => {
+    if (!reconnectNodeId || !reconnectRecoveryState) return;
+    const button = $("reconnect-restore");
+    button.disabled = true;
+    button.textContent = "Restoring…";
+    try {
+      const result = await api(
+        `/api/nodes/${encodeURIComponent(reconnectNodeId)}/active-snapshot/restore`,
+        {
+          method: "POST",
+          body: { mode: "background", skip_existing: true },
+        },
+      );
+      const restored = Number(result?.restored_count || 0);
+      const skipped = Number(result?.skipped_count || 0);
+      $("reconnect-recovery").textContent =
+        `Restored ${restored} saved session${restored === 1 ? "" : "s"}`
+        + (skipped ? `; skipped ${skipped} already-running or unavailable.` : ".");
+      button.hidden = true;
+      reconnectRecoveryState = null;
+      await refreshAfterNodeReconnect();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Retry restore";
+      $("reconnect-recovery").textContent = `Restore failed: ${error.message}`;
+      $("reconnect-recovery").hidden = false;
+      $("reconnect-recovery").classList.add("migration");
     }
   });
 

@@ -27,10 +27,15 @@ def _free_port() -> int:
 def _fake_remote_node() -> FastAPI:
     app = FastAPI()
     app.state.last_create = {}
+    app.state.last_restore = {}
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "instance_id": "remote-instance"}
+        return {
+            "ok": True,
+            "instance_id": "remote-instance",
+            "backend_id": "current-backend",
+        }
 
     @app.get("/api/config")
     def config():
@@ -40,14 +45,46 @@ def _fake_remote_node() -> FastAPI:
     def sessions():
         return {
             "instance_id": "remote-instance",
+            "backend_id": "current-backend",
             "snapshot": {"ready": True},
             "sessions": [{
                 "run_id": "remote-run 1",
                 "display_name": "Remote smoke task",
                 "tmux_session": "orch-remote-smoke",
+                "resume_id": "live-resume",
                 "kind": "run",
                 "alive": True,
             }],
+        }
+
+    @app.get("/api/active-snapshot")
+    def active_snapshot():
+        return {
+            "ok": True,
+            "saved_at": "2026-09-10T12:00:00",
+            "backend_id": "previous-backend",
+            "sessions": [
+                {
+                    "source_run_id": "remote-run 1",
+                    "display_name": "Remote smoke task",
+                    "resume_id": "live-resume",
+                },
+                {
+                    "source_run_id": "recoverable-run",
+                    "display_name": "Recover me",
+                    "resume_id": "recoverable-resume",
+                },
+            ],
+        }
+
+    @app.post("/api/active-snapshot/restore")
+    async def restore_active_snapshot(request: Request):
+        app.state.last_restore = await request.json()
+        return {
+            "ok": True,
+            "restored_count": 1,
+            "skipped_count": 1,
+            "restored": [{"run_id": "restored-run"}],
         }
 
     @app.get("/api/native-activity")
@@ -239,6 +276,26 @@ class RemoteNodeProxyTest(unittest.TestCase):
                     self.assertEqual(
                         self.server.config.app.state.last_create["mode"],
                         "background",
+                    )
+
+                    recovery = client.get("/api/nodes/dev/recovery")
+                    self.assertEqual(recovery.status_code, 200)
+                    self.assertTrue(recovery.json()["backend_changed"])
+                    self.assertEqual(recovery.json()["recoverable_count"], 1)
+                    self.assertEqual(
+                        recovery.json()["recoverable_sessions"][0]["display_name"],
+                        "Recover me",
+                    )
+
+                    restored = client.post(
+                        "/api/nodes/dev/active-snapshot/restore",
+                        json={"mode": "background", "skip_existing": True},
+                    )
+                    self.assertEqual(restored.status_code, 200)
+                    self.assertEqual(restored.json()["restored_count"], 1)
+                    self.assertEqual(
+                        self.server.config.app.state.last_restore,
+                        {"mode": "background", "skip_existing": True},
                     )
 
                     with client.websocket_connect(
