@@ -7,12 +7,16 @@ import json
 import logging
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from . import notifier
 from .config import ProjectConfig, load_config
@@ -816,6 +820,209 @@ def cmd_link_url(args):
     print(f"metadata: {meta_path}")
 
 
+def _dashboard_api_base(explicit: str = "") -> str:
+    configured = str(explicit or os.environ.get("ORCH_DASHBOARD_URL", "")).strip()
+    if configured:
+        return configured.rstrip("/")
+
+    candidates: list[int] = []
+    raw_port = os.environ.get("ORCH_DASHBOARD_PORT", "").strip()
+    if raw_port:
+        try:
+            candidates.append(int(raw_port))
+        except ValueError:
+            raise SystemExit(f"invalid ORCH_DASHBOARD_PORT: {raw_port}")
+    for port in (7861, 7860):
+        if port not in candidates:
+            candidates.append(port)
+    for port in candidates:
+        live = detect_dashboard(port, timeout=0.75)
+        scheme = str(live.get("scheme") or "")
+        if scheme:
+            return f"{scheme}://127.0.0.1:{port}"
+    raise SystemExit(
+        "Agent Orchestrator Dashboard is not reachable. Set "
+        "$ORCH_DASHBOARD_URL or start `orch dashboard`."
+    )
+
+
+def _dashboard_api_request(
+    args,
+    path: str,
+    *,
+    method: str = "GET",
+    body: Optional[dict] = None,
+) -> dict:
+    base = _dashboard_api_base(getattr(args, "dashboard_url", ""))
+    headers = {"Accept": "application/json"}
+    token = str(
+        getattr(args, "dashboard_token", "") or dashboard_token()
+    ).strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = Request(
+        f"{base}{path}", data=data, headers=headers, method=method,
+    )
+    try:
+        context = ssl._create_unverified_context() if base.startswith("https://") else None
+        with urlopen(request, timeout=35, context=context) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(raw).get("detail") or raw
+        except (json.JSONDecodeError, AttributeError):
+            detail = raw
+        raise SystemExit(f"dashboard API HTTP {exc.code}: {detail}") from exc
+    except (URLError, OSError, TimeoutError) as exc:
+        raise SystemExit(f"dashboard API unavailable at {base}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"dashboard API returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit("dashboard API returned a non-object response")
+    return payload
+
+
+def _add_dashboard_client_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dashboard-url", default="",
+        help="Dashboard base URL (default: $ORCH_DASHBOARD_URL or local auto-detect)",
+    )
+    parser.add_argument(
+        "--dashboard-token", default="",
+        help="Dashboard bearer token (default: local token cache)",
+    )
+
+
+def cmd_delegate(args):
+    if args.prompt_file:
+        if args.prompt_file == "-":
+            prompt = sys.stdin.read()
+        else:
+            try:
+                prompt = Path(args.prompt_file).expanduser().read_text()
+            except OSError as exc:
+                raise SystemExit(f"cannot read prompt file: {exc}") from exc
+    else:
+        prompt = args.prompt
+
+    body = {
+        "parent_run_id": args.parent or os.environ.get("ORCH_RUN_ID", ""),
+        "agent": args.agent,
+        "model": args.model,
+        "effort": args.effort,
+        "effort_mode": args.effort_mode,
+        "label": args.label,
+        "cwd": args.cwd,
+        "priority": args.priority,
+        "prompt": prompt,
+        "inherit_linked_items": args.inherit_linked_items,
+        "idempotency_key": args.idempotency_key,
+    }
+    if args.node:
+        body["node_id"] = args.node
+    result = _dashboard_api_request(
+        args, "/api/delegate", method="POST", body=body,
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    print(f"Delegated: {result.get('run_id', '')}")
+    print(f"Session:   {result.get('tmux_session', '')}")
+    print(
+        "Agent:     "
+        f"{result.get('agent', args.agent)} / "
+        f"{result.get('model') or 'default'} / "
+        f"effort={result.get('effort') or 'default'}"
+    )
+    print(f"Prompt:    {'queued' if result.get('prompt_pending') else 'not queued'}")
+    if result.get("replayed"):
+        print("Result:    existing child reused (idempotency replay)")
+
+
+def cmd_session_list(args):
+    payload = _dashboard_api_request(args, "/api/sessions")
+    sessions = payload.get("sessions")
+    if not isinstance(sessions, list):
+        sessions = []
+    if args.alive:
+        sessions = [row for row in sessions if row.get("alive")]
+    if args.node:
+        sessions = [
+            row for row in sessions
+            if str(row.get("node_id") or "local") == args.node
+        ]
+    rows = [{
+        "run_id": str(row.get("run_id") or ""),
+        "name": str(row.get("display_name") or row.get("task") or ""),
+        "node": str(row.get("node_label") or row.get("node_id") or "local"),
+        "alive": bool(row.get("alive")),
+        "busy": bool(row.get("busy") or row.get("background_active")),
+        "agent": str(row.get("agent") or ""),
+        "model": str(row.get("model") or ""),
+        "effort": str(row.get("effort") or ""),
+        "priority": str(row.get("panel_state") or ""),
+        "parent_run_id": str(row.get("parent_run_id") or ""),
+    } for row in sessions]
+    if args.json:
+        print(json.dumps({"sessions": rows}, ensure_ascii=False, indent=2))
+        return
+    for row in rows:
+        state = "busy" if row["busy"] else "alive" if row["alive"] else "ended"
+        print(
+            f"{row['run_id']}\t{state}\t{row['node']}\t"
+            f"{row['agent']}\t{row['name']}"
+        )
+
+
+def cmd_session_read(args):
+    position = "head" if args.head else "tail"
+    run_id = args.run_id or os.environ.get("ORCH_RUN_ID", "")
+    if not run_id:
+        raise SystemExit("run_id is required outside an Orchestrator session")
+    payload = _dashboard_api_request(
+        args,
+        f"/api/sessions/{quote(run_id, safe='')}/read"
+        f"?lines={args.lines}&position={position}",
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        sys.stdout.write(str(payload.get("text") or ""))
+
+
+def cmd_session_send(args):
+    if args.file:
+        if args.file == "-":
+            text = sys.stdin.read()
+        else:
+            try:
+                text = Path(args.file).expanduser().read_text()
+            except OSError as exc:
+                raise SystemExit(f"cannot read message file: {exc}") from exc
+    else:
+        text = args.message
+    if text is None:
+        raise SystemExit("message or --file is required")
+    payload = _dashboard_api_request(
+        args,
+        f"/api/sessions/{quote(args.run_id, safe='')}/send",
+        method="POST",
+        body={"text": text, "enter": not args.no_enter, "literal": True},
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"Sent {payload.get('bytes_sent', len(text))} characters to "
+            f"{payload.get('session', args.run_id)}"
+        )
+
+
 def cmd_url(args):
     """Print the current best dashboard URL (prefers VPN/tunnel IPs over home
     LAN) and optionally copy it to the macOS clipboard. Handy when the Mac
@@ -1049,6 +1256,110 @@ def main():
     p_continue.add_argument("--prompt", "-p", default="", help="Send a continuation prompt to the agent")
     p_continue.add_argument("--no-attach", action="store_true", help="Run watcher in background without attaching")
     p_continue.set_defaults(func=cmd_continue)
+
+    p_delegate = sub.add_parser(
+        "delegate",
+        help="Create a child agent session and queue its first task",
+    )
+    p_delegate.add_argument(
+        "--agent", default="codex", choices=("codex", "claude", "cursor"),
+        help="child terminal agent (default: codex)",
+    )
+    p_delegate.add_argument("--model", default="", help="exact child model")
+    p_delegate.add_argument(
+        "--effort", default="", help="exact child reasoning effort",
+    )
+    p_delegate.add_argument(
+        "--effort-mode", default="",
+        help="optional agent-specific effort mode metadata",
+    )
+    p_delegate.add_argument("--label", default="", help="child session name")
+    p_delegate.add_argument(
+        "--cwd", default="",
+        help="child working directory (default: parent cwd)",
+    )
+    p_delegate.add_argument(
+        "--priority", default="",
+        choices=("", "lead", "p0", "p1", "p2", "blocked", "watching", "done"),
+        help="initial Dashboard priority/tag",
+    )
+    p_delegate.add_argument(
+        "--parent", default="",
+        help="parent run id (default: $ORCH_RUN_ID inside a session)",
+    )
+    p_delegate.add_argument(
+        "--node", default="",
+        help="target remote node id when calling an aggregated Dashboard",
+    )
+    prompt_group = p_delegate.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt", default="", help="first task prompt")
+    prompt_group.add_argument(
+        "--prompt-file", default="",
+        help="read first task prompt from a UTF-8 file, or '-' for stdin",
+    )
+    p_delegate.add_argument(
+        "--idempotency-key", default="",
+        help="reuse the existing child if this exact request is retried",
+    )
+    p_delegate.add_argument(
+        "--no-inherit-linked-items", dest="inherit_linked_items",
+        action="store_false",
+        help="do not copy the parent's Dashboard linked items",
+    )
+    p_delegate.set_defaults(inherit_linked_items=True)
+    p_delegate.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_delegate)
+    p_delegate.set_defaults(func=cmd_delegate)
+
+    p_session = sub.add_parser(
+        "session", help="List, read, or send to Dashboard sessions",
+    )
+    session_sub = p_session.add_subparsers(dest="session_command", required=True)
+
+    p_session_list = session_sub.add_parser("list", help="List known sessions")
+    p_session_list.add_argument(
+        "--alive", action="store_true", help="show only live sessions",
+    )
+    p_session_list.add_argument(
+        "--node", default="", help="filter by node id (or 'local')",
+    )
+    p_session_list.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_session_list)
+    p_session_list.set_defaults(func=cmd_session_list)
+
+    p_session_read = session_sub.add_parser(
+        "read", help="Read a bounded terminal/log head or tail",
+    )
+    p_session_read.add_argument(
+        "run_id", nargs="?", default="",
+        help="run id (default: $ORCH_RUN_ID)",
+    )
+    p_session_read.add_argument(
+        "-n", "--lines", type=int, default=200,
+        help="number of lines, 1-5000 (default: 200)",
+    )
+    p_session_read.add_argument(
+        "--head", action="store_true", help="read from the history beginning",
+    )
+    p_session_read.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_session_read)
+    p_session_read.set_defaults(func=cmd_session_read)
+
+    p_session_send = session_sub.add_parser(
+        "send", help="Send a message or key sequence to a live session",
+    )
+    p_session_send.add_argument("run_id", help="target run id")
+    p_session_send.add_argument("message", nargs="?", default=None)
+    p_session_send.add_argument(
+        "--file", default="",
+        help="read message from a UTF-8 file, or '-' for stdin",
+    )
+    p_session_send.add_argument(
+        "--no-enter", action="store_true", help="paste without submitting",
+    )
+    p_session_send.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_session_send)
+    p_session_send.set_defaults(func=cmd_session_send)
 
     p_organize = sub.add_parser("organize", help="Classify unarchived sessions into projects, then prune")
     p_organize.add_argument("agent", nargs="?", default="cursor", help="Agent type: cursor, claude (default: cursor)")

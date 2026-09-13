@@ -27,6 +27,7 @@ def _free_port() -> int:
 def _fake_remote_node() -> FastAPI:
     app = FastAPI()
     app.state.last_create = {}
+    app.state.last_delegate = {}
     app.state.last_resume = {}
     app.state.last_restore = {}
 
@@ -102,6 +103,17 @@ def _fake_remote_node() -> FastAPI:
         body = await request.json()
         return {"ok": True, "run_id": run_id, "received": body}
 
+    @app.get("/api/sessions/{run_id}/read")
+    def read(run_id: str, lines: int = 200, position: str = "tail"):
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "source": "tmux",
+            "requested_lines": lines,
+            "position": position,
+            "text": "remote tail\n",
+        }
+
     @app.post("/api/sessions/{run_id}/stop")
     def stop(run_id: str):
         return {
@@ -127,6 +139,17 @@ def _fake_remote_node() -> FastAPI:
         body = await request.json()
         app.state.last_create = body
         return {"ok": True, "run_id": "created-remote"}
+
+    @app.post("/api/delegate")
+    async def delegate(request: Request):
+        body = await request.json()
+        app.state.last_delegate = body
+        return {
+            "ok": True,
+            "run_id": "delegated-remote",
+            "parent_run_id": body.get("parent_run_id", ""),
+            "delegation_id": "delegate-id",
+        }
 
     @app.post("/api/resume")
     async def resume(request: Request):
@@ -248,6 +271,18 @@ class RemoteNodeProxyTest(unittest.TestCase):
                         ("dev", "remote-run 1"),
                     )
 
+                    read = client.get(
+                        f"/api/sessions/{run_id}/read",
+                        params={"lines": 17, "position": "head"},
+                    )
+                    self.assertEqual(read.status_code, 200)
+                    self.assertEqual(read.json()["text"], "remote tail\n")
+                    self.assertEqual(read.json()["requested_lines"], 17)
+                    self.assertEqual(
+                        parse_qualified_run_id(read.json()["run_id"]),
+                        ("dev", "remote-run 1"),
+                    )
+
                     stopped = client.post(
                         f"/api/sessions/{run_id}/stop",
                     )
@@ -287,6 +322,32 @@ class RemoteNodeProxyTest(unittest.TestCase):
                     self.assertEqual(
                         self.server.config.app.state.last_create["mode"],
                         "background",
+                    )
+
+                    delegated = client.post("/api/delegate", json={
+                        "node_id": "dev",
+                        "parent_run_id": run_id,
+                        "agent": "claude",
+                        "model": "claude-opus-test",
+                        "effort": "xhigh",
+                        "prompt": "Do the isolated task.",
+                    })
+                    self.assertEqual(delegated.status_code, 200)
+                    self.assertEqual(
+                        parse_qualified_run_id(delegated.json()["run_id"]),
+                        ("dev", "delegated-remote"),
+                    )
+                    self.assertEqual(
+                        parse_qualified_run_id(
+                            delegated.json()["parent_run_id"]
+                        ),
+                        ("dev", "remote-run 1"),
+                    )
+                    self.assertEqual(
+                        self.server.config.app.state.last_delegate[
+                            "parent_run_id"
+                        ],
+                        "remote-run 1",
                     )
 
                     resumed = client.post("/api/resume", json={

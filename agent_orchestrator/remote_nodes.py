@@ -410,6 +410,11 @@ class RemoteNodeRegistry:
                     continue
                 row["remote_run_id"] = remote_run_id
                 row["run_id"] = qualify_run_id(node.id, remote_run_id)
+                parent_run_id = str(row.get("parent_run_id") or "")
+                if parent_run_id and not parse_qualified_run_id(parent_run_id):
+                    row["parent_run_id"] = qualify_run_id(
+                        node.id, parent_run_id
+                    )
                 row["node_id"] = node.id
                 row["node_label"] = node.label
                 row["remote"] = True

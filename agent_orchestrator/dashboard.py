@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 import copy
 import hashlib
 import hmac
@@ -409,6 +410,59 @@ def tmux_capture_activity(session: str) -> str:
     return tmux_capture(session, history=False)
 
 
+def tmux_capture_lines(session: str, lines: int = 200,
+                       position: str = "tail") -> Optional[str]:
+    """Return a bounded, joined tmux pane snapshot.
+
+    ``tail`` avoids reading the pane's complete history. ``head`` must ask
+    tmux for the history origin, but is only used by an explicit API/CLI
+    request and the public endpoint caps ``lines``.
+    """
+    if not session:
+        return None
+    lines = max(1, int(lines))
+    if position == "tail":
+        cmd = [
+            "tmux", "capture-pane", "-t", session, "-p", "-J",
+            "-S", f"-{lines}",
+        ]
+    elif position == "head":
+        cmd = [
+            "tmux", "capture-pane", "-t", session, "-p", "-J",
+            "-S", "-",
+        ]
+    else:
+        raise ValueError("position must be 'head' or 'tail'")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    captured = result.stdout.splitlines()
+    selected = captured[:lines] if position == "head" else captured[-lines:]
+    return "\n".join(selected) + ("\n" if selected else "")
+
+
+def _read_file_lines(path: Path, lines: int,
+                     position: str) -> Optional[str]:
+    """Read a bounded number of UTF-8 lines without loading a large log."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            if position == "head":
+                selected = []
+                for _ in range(lines):
+                    line = handle.readline()
+                    if not line:
+                        break
+                    selected.append(line)
+                return "".join(selected)
+            selected = deque(handle, maxlen=lines)
+            return "".join(selected)
+    except OSError:
+        return None
+
+
 def _tmux_send_keys(argv: list, *, retries: int = 2,
                     timeout: float = 10.0) -> tuple[bool, str]:
     """Run one `tmux send-keys ...` invocation with small-retry-on-stutter.
@@ -529,32 +583,72 @@ def tmux_send_key(session: str, key: str) -> tuple[bool, str]:
                            timeout=5)
 
 
+def _detect_agent_input_ready(text: str) -> bool:
+    """Recognize a real agent input prompt, excluding startup menus."""
+    clean = [_mission_clean_line(line) for line in (text or "").splitlines()]
+    lines = [line.strip() for line in clean if line.strip()]
+    tail = lines[-18:]
+    if any(
+        marker.lower() in line.lower()
+        for line in tail
+        for marker in (
+            "press enter to continue",
+            "do you trust the contents of this directory",
+            "update available!",
+        )
+    ):
+        return False
+    if _detect_claude_prompt_ready(text):
+        return True
+    for index, line in enumerate(tail):
+        if not line.startswith(("›", "❯", ">")):
+            continue
+        if re.match(r"^[›❯>]\s*\d+\.", line):
+            continue
+        nearby = tail[index + 1:index + 7]
+        if any(
+            " mode on" in f" {candidate.lower()}"
+            or "·" in candidate
+            or "for shortcuts" in candidate.lower()
+            for candidate in nearby
+        ):
+            return True
+    return False
+
+
 async def _deliver_first_prompt(session: str, prompt: str,
                                 ready_timeout: float = 30.0,
                                 grace: float = 2.0) -> bool:
-    """Poll for `session` to become addressable, then paste `prompt` + Enter.
+    """Wait for the agent's real input prompt, then paste text + Enter.
 
     Designed to run as a background asyncio task so the HTTP endpoint that
-    kicked off a clone can return immediately. Silently swallows errors —
-    the caller already replied to the user, and there's no useful recovery
-    path here (the session is live; at worst the user pastes manually).
+    kicked off a clone can return immediately. Startup upgrade and workspace
+    trust menus deliberately do not count as ready: sending into one of those
+    menus can silently discard the task before the agent starts.
     """
     if not session or not prompt:
         return False
     import asyncio as _a  # local alias; top-level import exists elsewhere
     loop_deadline = time.time() + ready_timeout
     while time.time() < loop_deadline:
-        if tmux_alive(session):
+        if (
+            tmux_alive(session)
+            and _detect_agent_input_ready(
+                tmux_capture(session, history=False)
+            )
+        ):
             break
         await _a.sleep(0.3)
     else:
         return False
     await _a.sleep(grace)
     try:
-        tmux_send(session, prompt, literal=True, enter=False)
+        ok, _ = tmux_send(session, prompt, literal=True, enter=False)
+        if not ok:
+            return False
         await _a.sleep(0.2)
-        tmux_send(session, "", literal=True, enter=True)
-        return True
+        ok, _ = tmux_send(session, "", literal=True, enter=True)
+        return ok
     except Exception:
         return False
 
@@ -5752,6 +5846,11 @@ def _discover_runs_unlocked(
                     "panel_state": st.get("panel_state", ""),
                     "terminal_theme": _normalize_terminal_theme(st.get("terminal_theme", "")),
                     "linked_folders": _normalize_linked_folders(st.get("linked_folders")),
+                    "parent_run_id": st.get("parent_run_id", "") or "",
+                    "parent_display_name": st.get("parent_display_name", "") or "",
+                    "delegation_id": st.get("delegation_id", "") or "",
+                    "delegated_at": st.get("delegated_at", "") or "",
+                    "delegation_prompt_status": st.get("delegation_prompt_status", "") or "",
                 }
                 _add_resume_fields(row, st)
                 runs.append(row)
@@ -5794,6 +5893,11 @@ def _discover_runs_unlocked(
                 "panel_state": data.get("panel_state", ""),
                 "terminal_theme": _normalize_terminal_theme(data.get("terminal_theme", "")),
                 "linked_folders": _normalize_linked_folders(data.get("linked_folders")),
+                "parent_run_id": data.get("parent_run_id", "") or "",
+                "parent_display_name": data.get("parent_display_name", "") or "",
+                "delegation_id": data.get("delegation_id", "") or "",
+                "delegated_at": data.get("delegated_at", "") or "",
+                "delegation_prompt_status": data.get("delegation_prompt_status", "") or "",
             }
             _add_resume_fields(row, data)
             runs.append(row)
@@ -6080,6 +6184,11 @@ def _lookup_run_light(outputs_dir: Path, run_id: str) -> Optional[dict[str, Any]
                 "panel_state": st.get("panel_state", ""),
                 "terminal_theme": _normalize_terminal_theme(st.get("terminal_theme", "")),
                 "linked_folders": _normalize_linked_folders(st.get("linked_folders")),
+                "parent_run_id": st.get("parent_run_id", "") or "",
+                "parent_display_name": st.get("parent_display_name", "") or "",
+                "delegation_id": st.get("delegation_id", "") or "",
+                "delegated_at": st.get("delegated_at", "") or "",
+                "delegation_prompt_status": st.get("delegation_prompt_status", "") or "",
                 "busy": False,
             }
             _add_resume_fields(row, st)
@@ -6113,6 +6222,11 @@ def _lookup_run_light(outputs_dir: Path, run_id: str) -> Optional[dict[str, Any]
                 "panel_state": data.get("panel_state", ""),
                 "terminal_theme": _normalize_terminal_theme(data.get("terminal_theme", "")),
                 "linked_folders": _normalize_linked_folders(data.get("linked_folders")),
+                "parent_run_id": data.get("parent_run_id", "") or "",
+                "parent_display_name": data.get("parent_display_name", "") or "",
+                "delegation_id": data.get("delegation_id", "") or "",
+                "delegated_at": data.get("delegated_at", "") or "",
+                "delegation_prompt_status": data.get("delegation_prompt_status", "") or "",
                 "busy": False,
             }
             _add_resume_fields(row, data)
@@ -7451,7 +7565,9 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                 for item in value
             ]
         if (isinstance(value, str)
-                and parent_key in {"source_run_id", "resumed_from"}
+                and parent_key in {
+                    "source_run_id", "resumed_from", "parent_run_id",
+                }
                 and value and not parse_qualified_run_id(value)):
             return qualify_run_id(node_id, value)
         return value
@@ -8418,6 +8534,49 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
                     return ""
         return ""
 
+    @app.get("/api/sessions/{run_id}/read")
+    def read_session(
+        run_id: str,
+        lines: int = Query(200, ge=1, le=5000),
+        position: str = Query("tail", pattern="^(head|tail)$"),
+    ):
+        """Read a bounded head/tail of one terminal, falling back to its log."""
+        r = _lookup_run_light(outputs_dir, run_id)
+        if not r:
+            raise HTTPException(404, "run not found")
+
+        source = ""
+        text: Optional[str] = None
+        session = str(r.get("tmux_session") or "")
+        session_alive = bool(session and tmux_alive(session))
+        if session_alive:
+            text = tmux_capture_lines(session, lines, position)
+            if text is not None:
+                source = "tmux"
+
+        if text is None:
+            run_dir = str(r.get("run_dir") or "")
+            log_file = str(r.get("log_file") or "")
+            if run_dir and log_file:
+                log_path = Path(run_dir) / log_file
+                if log_path.is_file():
+                    text = _read_file_lines(log_path, lines, position)
+                    if text is not None:
+                        source = "log"
+
+        text = text or ""
+        return {
+            "ok": bool(source),
+            "run_id": run_id,
+            "session": session,
+            "source": source or "none",
+            "position": position,
+            "requested_lines": lines,
+            "returned_lines": len(text.splitlines()),
+            "text": text,
+            "alive": session_alive,
+        }
+
     @app.get("/api/sessions/{run_id}/stream")
     async def stream_pane(run_id: str, request: Request):
         """SSE stream: push pane content only when it changes (hash-based diff)."""
@@ -9111,6 +9270,8 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         orch_bin = str(SCRIPTS_DIR / "run.sh")
         runtime_env = os.environ.copy()
         runtime_env["ORCH_OUTPUTS_DIR"] = str(outputs_dir)
+        dashboard_url = f"{scheme}://127.0.0.1:{port}"
+        runtime_env["ORCH_DASHBOARD_URL"] = dashboard_url
         projects_root = _dashboard_client_config()["projects_root"]
         if projects_root:
             runtime_env["ORCH_PROJECTS_ROOT"] = projects_root
@@ -9118,6 +9279,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         parts = [
             "env",
             f"ORCH_OUTPUTS_DIR={shlex.quote(str(outputs_dir))}",
+            f"ORCH_DASHBOARD_URL={shlex.quote(dashboard_url)}",
         ]
         if projects_root:
             parts.append(f"ORCH_PROJECTS_ROOT={shlex.quote(projects_root)}")
@@ -9307,6 +9469,143 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             )
         return cwd
 
+    async def _deliver_delegated_prompt(
+        session: str,
+        session_json: Path,
+        prompt: str,
+    ) -> None:
+        delivered = await _deliver_first_prompt(session, prompt)
+        try:
+            with edit_json(session_json) as data:
+                data["delegation_prompt_status"] = (
+                    "delivered" if delivered else "failed"
+                )
+                data["delegation_prompt_updated_at"] = (
+                    datetime.now().astimezone().isoformat(timespec="seconds")
+                )
+        except (OSError, ValueError):
+            pass
+        session_snapshots.request_refresh()
+
+    def _spawn_delegated_session(body: dict[str, Any]) -> dict[str, Any]:
+        parent_run_id = str(body.get("parent_run_id") or "").strip()
+        parent = None
+        if parent_run_id:
+            parent = _lookup_run_light(outputs_dir, parent_run_id)
+            if not parent:
+                raise HTTPException(404, "parent session not found")
+
+        agent = str(body.get("agent") or "codex").strip().lower()
+        if agent not in ("cursor", "claude", "agent", "codex"):
+            raise HTTPException(
+                400, "agent must be 'cursor', 'claude', or 'codex'"
+            )
+        prompt = str(body.get("prompt") or "")
+        if not prompt.strip():
+            raise HTTPException(400, "prompt is required")
+        if len(prompt.encode("utf-8")) > 1024 * 1024:
+            raise HTTPException(413, "prompt is larger than 1 MiB")
+
+        label = str(body.get("label") or "").strip()
+        if not label:
+            label = f"{agent}-delegate"
+        if len(label) > 160:
+            raise HTTPException(400, "label must be at most 160 characters")
+        model = str(body.get("model") or "").strip()
+        effort = str(body.get("effort") or "").strip().lower()
+        effort_mode = str(body.get("effort_mode") or "").strip().lower()
+        priority = str(body.get("priority") or "").strip().lower()
+        if priority not in ALLOWED_PANEL_STATES:
+            raise HTTPException(
+                400,
+                f"priority must be one of {sorted(ALLOWED_PANEL_STATES)}",
+            )
+        raw_cwd = str(body.get("cwd") or "").strip()
+        if not raw_cwd and parent:
+            raw_cwd = str(parent.get("cwd") or "")
+        cwd = _resolve_default_cwd(raw_cwd)
+        terminal_theme = (
+            _normalize_terminal_theme(str(body.get("terminal_theme") or ""))
+            if "terminal_theme" in body
+            else (
+                _normalize_terminal_theme(
+                    str((parent or {}).get("terminal_theme") or "")
+                )
+                if parent else None
+            )
+        )
+
+        result = _spawn_session(
+            agent,
+            model,
+            label,
+            cwd,
+            "background",
+            effort=effort,
+            effort_mode=effort_mode,
+            terminal_theme=terminal_theme,
+        )
+        session = str(result.get("tmux_session") or "").strip()
+        if not session:
+            raise HTTPException(
+                500, "delegated session started without a tmux session"
+            )
+        run_dir = Path(str(result.get("run_dir") or ""))
+        session_json = run_dir / "session.json"
+        delegation_id = str(uuid.uuid4())
+        delegated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        parent_display_name = str(
+            (parent or {}).get("display_name")
+            or (parent or {}).get("task")
+            or ""
+        )
+        try:
+            with edit_json(session_json) as data:
+                data.update({
+                    "parent_run_id": parent_run_id,
+                    "parent_display_name": parent_display_name,
+                    "delegation_id": delegation_id,
+                    "delegated_at": delegated_at,
+                    "delegation_prompt_status": "pending",
+                })
+                if priority:
+                    data["panel_state"] = priority
+        except (OSError, ValueError) as exc:
+            if session:
+                tmux_kill(session)
+            raise HTTPException(
+                500, f"failed to persist delegation metadata: {exc}"
+            ) from exc
+
+        linked_copy = {"copied": 0, "warning": ""}
+        if parent and bool(body.get("inherit_linked_items", True)):
+            linked_copy = _copy_linked_folders_to_spawned_run(
+                outputs_dir,
+                parent,
+                result,
+                exclude_run_id=parent_run_id,
+                label=label,
+            )
+
+        asyncio.create_task(
+            _deliver_delegated_prompt(session, session_json, prompt)
+        )
+        session_snapshots.request_refresh()
+        return {
+            **result,
+            "agent": agent,
+            "model": model,
+            "effort": effort,
+            "priority": priority,
+            "parent_run_id": parent_run_id,
+            "parent_display_name": parent_display_name,
+            "delegation_id": delegation_id,
+            "delegated_at": delegated_at,
+            "prompt_pending": True,
+            "linked_items_copied": linked_copy.get("copied", 0),
+            "linked_items_warning": linked_copy.get("warning", ""),
+        }
+
     @app.post("/api/create")
     async def post_create(request: Request):
         """Spawn a new `orch run` session.
@@ -9361,6 +9660,114 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             effort=effort,
             terminal_theme=terminal_theme,
         )
+
+    @app.post("/api/delegate")
+    async def post_delegate(request: Request):
+        """Atomically create a child session and queue its first prompt.
+
+        ``parent_run_id`` is optional at the HTTP level; ``orch delegate``
+        supplies the current ``ORCH_RUN_ID`` automatically when available.
+        Reusing an ``idempotency_key`` with the same request returns the
+        existing child instead of creating a duplicate.
+        """
+        raw = await request.body()
+        if len(raw) > 1024 * 1024 + 64 * 1024:
+            raise HTTPException(413, "delegation request is too large")
+        try:
+            body = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, "invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body must be an object")
+
+        requested_node = str(body.pop("node_id", "") or "").strip()
+        parent_run_id = str(body.get("parent_run_id") or "").strip()
+        parsed_parent = parse_qualified_run_id(parent_run_id)
+        node_id = requested_node or (
+            parsed_parent[0] if parsed_parent else "local"
+        )
+        if node_id != "local":
+            node = remote_nodes.get(node_id)
+            if node is None:
+                raise HTTPException(404, "remote node not found")
+            if parsed_parent:
+                if parsed_parent[0] != node_id:
+                    raise HTTPException(
+                        400, "parent session belongs to a different remote node"
+                    )
+                body["parent_run_id"] = parsed_parent[1]
+            result = await _remote_json(
+                node, "/api/delegate", method="POST", body=body
+            )
+            remote_nodes.request_refresh()
+            return result
+        if parsed_parent:
+            raise HTTPException(
+                400, "a remote parent requires its matching node_id"
+            )
+
+        idempotency_key = str(body.get("idempotency_key") or "").strip()
+        if len(idempotency_key) > 240:
+            raise HTTPException(
+                400, "idempotency_key must be at most 240 characters"
+            )
+        if not idempotency_key:
+            return _spawn_delegated_session(body)
+
+        request_material = {
+            key: value for key, value in body.items()
+            if key != "idempotency_key"
+        }
+        request_hash = hashlib.sha256(json.dumps(
+            request_material,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        index_key = hashlib.sha256(
+            f"{parent_run_id}\0{idempotency_key}".encode("utf-8")
+        ).hexdigest()
+        index_path = outputs_dir / ".delegations.json"
+        with edit_json(index_path, create=True) as index:
+            entries = index.setdefault("entries", {})
+            if not isinstance(entries, dict):
+                entries = {}
+                index["entries"] = entries
+            prior = entries.get(index_key)
+            if isinstance(prior, dict):
+                if prior.get("request_hash") != request_hash:
+                    raise HTTPException(
+                        409,
+                        "idempotency_key was already used with a different request",
+                    )
+                response = prior.get("response")
+                existing_run_id = (
+                    str(response.get("run_id") or "")
+                    if isinstance(response, dict) else ""
+                )
+                if existing_run_id and _lookup_run_light(
+                    outputs_dir, existing_run_id
+                ):
+                    current = _lookup_run_light(outputs_dir, existing_run_id)
+                    prompt_status = str(
+                        (current or {}).get("delegation_prompt_status")
+                        or "pending"
+                    )
+                    return {
+                        **response,
+                        "delegation_prompt_status": prompt_status,
+                        "prompt_pending": prompt_status == "pending",
+                        "replayed": True,
+                    }
+                entries.pop(index_key, None)
+
+            result = _spawn_delegated_session(body)
+            entries[index_key] = {
+                "request_hash": request_hash,
+                "created_at": result.get("delegated_at", ""),
+                "response": result,
+            }
+            return {**result, "replayed": False}
 
     @app.get("/api/resumable")
     async def get_resumable(

@@ -106,7 +106,11 @@ case "$AGENT_TYPE" in
         # for sandbox policy, not per-command), so the same auto-press-y
         # loop in perm_gate.py largely doesn't apply — but we still let
         # the watcher run for log capture.
-        AGENT_CMD="codex --dangerously-bypass-approvals-and-sandbox"
+        # Dashboard/delegated sessions are launched unattended.  A startup
+        # update picker can otherwise consume the first queued task before the
+        # Codex prompt exists.  Keep this invocation-local so ordinary Codex
+        # launches still use the user's normal update preference.
+        AGENT_CMD="codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
         ;;
     *)
         AGENT_CMD="$AGENT_TYPE"
@@ -163,7 +167,7 @@ if [ -n "$RESUME_ID" ]; then
         codex)
             # `codex resume` is a subcommand; keep any model/sandbox flags
             # before the session id.
-            AGENT_CMD="codex resume --dangerously-bypass-approvals-and-sandbox"
+            AGENT_CMD="codex resume --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
             if [ -n "$MODEL" ]; then
                 MODEL_Q=$(printf '%q' "$MODEL")
                 AGENT_CMD="$AGENT_CMD -m $MODEL_Q"
@@ -196,7 +200,7 @@ if [ -n "$METADATA_RESUME_ID" ]; then
             METADATA_RESUME_CMD="agent --resume $METADATA_RESUME_ID"
             ;;
         codex)
-            METADATA_RESUME_CMD="codex resume --dangerously-bypass-approvals-and-sandbox"
+            METADATA_RESUME_CMD="codex resume --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
             if [ -n "$MODEL" ]; then
                 METADATA_RESUME_CMD="$METADATA_RESUME_CMD -m $MODEL"
             fi
@@ -237,6 +241,7 @@ SESSION_JSON_Q=$(printf "%q" "$SESSION_JSON")
 RUN_ID_Q=$(printf "%q" "$RUN_ID")
 TASK_NAME_Q=$(printf "%q" "$TASK_NAME")
 AGENT_TYPE_Q=$(printf "%q" "$AGENT_TYPE")
+DASHBOARD_URL_Q=$(printf "%q" "${ORCH_DASHBOARD_URL:-}")
 
 # Create the initial metadata before the agent can issue concurrent `orch`
 # updates. Every later writer uses the shared JSON lock protocol.
@@ -264,7 +269,7 @@ cat > "$SESSION_JSON" <<EOF
 EOF
 
 tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
-    "cd $CWD_Q && ORCH_RUN_ID=$RUN_ID_Q ORCH_RUN_DIR=$RUN_DIR_Q ORCH_TMUX_SESSION=$SESSION_Q ORCH_SESSION_JSON=$SESSION_JSON_Q ORCH_TASK_NAME=$TASK_NAME_Q ORCH_AGENT_TYPE=$AGENT_TYPE_Q $AGENT_CMD; echo '--- Agent exited ---'; read"
+    "cd $CWD_Q && ORCH_RUN_ID=$RUN_ID_Q ORCH_RUN_DIR=$RUN_DIR_Q ORCH_TMUX_SESSION=$SESSION_Q ORCH_SESSION_JSON=$SESSION_JSON_Q ORCH_TASK_NAME=$TASK_NAME_Q ORCH_AGENT_TYPE=$AGENT_TYPE_Q ORCH_DASHBOARD_URL=$DASHBOARD_URL_Q $AGENT_CMD; echo '--- Agent exited ---'; read"
 
 # Kill any pre-existing watcher for this RUN_DIR (re-run after crash,
 # or an `orch continue` replacing a daemon). We MUST wait for the old

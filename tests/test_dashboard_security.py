@@ -11,7 +11,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -71,6 +72,64 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertEqual(dashboard.STATIC_DIR, project_dir / "static")
         self.assertEqual(dashboard.SCRIPTS_DIR, project_dir / "scripts")
         self.assertEqual(local_settings.PROJECT_DIR, project_dir)
+
+    def test_delegate_cli_preserves_exact_model_effort_and_parent(self):
+        args = SimpleNamespace(
+            prompt_file="",
+            prompt="Do the bounded child task.",
+            parent="",
+            agent="claude",
+            model="claude-opus-test",
+            effort="xhigh",
+            effort_mode="",
+            label="child",
+            cwd="",
+            priority="lead",
+            inherit_linked_items=True,
+            idempotency_key="parent-child-1",
+            node="",
+            json=True,
+            dashboard_url="",
+            dashboard_token="",
+        )
+        response = {
+            "ok": True, "run_id": "child-run::child",
+            "tmux_session": "orch-child", "prompt_pending": True,
+        }
+        with patch.dict(os.environ, {"ORCH_RUN_ID": "parent-run::parent"}), \
+                patch.object(
+                    cli, "_dashboard_api_request", return_value=response,
+                ) as api, patch.object(sys, "stdout", io.StringIO()):
+            cli.cmd_delegate(args)
+
+        api.assert_called_once()
+        body = api.call_args.kwargs["body"]
+        self.assertEqual(body["parent_run_id"], "parent-run::parent")
+        self.assertEqual(body["model"], "claude-opus-test")
+        self.assertEqual(body["effort"], "xhigh")
+        self.assertEqual(body["priority"], "lead")
+
+    def test_session_read_cli_url_quotes_remote_run_id(self):
+        args = SimpleNamespace(
+            run_id="remote run::task/one",
+            head=False,
+            lines=25,
+            json=False,
+            dashboard_url="",
+            dashboard_token="",
+        )
+        with patch.object(
+            cli, "_dashboard_api_request",
+            return_value={"text": "last line\n"},
+        ) as api, patch.object(sys, "stdout", io.StringIO()) as stdout:
+            cli.cmd_session_read(args)
+
+        self.assertEqual(stdout.getvalue(), "last line\n")
+        self.assertEqual(
+            api.call_args.args[1],
+            "/api/sessions/remote%20run%3A%3Atask%2Fone/read"
+            "?lines=25&position=tail",
+        )
 
     def test_launchagent_renderer_escapes_values_and_hides_token(self):
         template = Path("launchd/com.user.orch-dashboard.plist.template")
@@ -376,6 +435,34 @@ class DashboardAgentExitDetectionTests(unittest.TestCase):
 
         self.assertTrue(active)
         self.assertIn("Waiting for", reason)
+
+    def test_agent_input_ready_rejects_codex_startup_menus(self):
+        trust = """
+        Do you trust the contents of this directory?
+        › 1. Yes, continue
+          2. No, quit
+        Press enter to continue
+        """
+        update = """
+        ✨ Update available! 0.147.0 -> 0.154.0
+        › 1. Update now
+          2. Skip
+        Press enter to continue
+        """
+        self.assertFalse(dashboard._detect_agent_input_ready(trust))
+        self.assertFalse(dashboard._detect_agent_input_ready(update))
+
+    def test_agent_input_ready_accepts_codex_and_claude_prompts(self):
+        codex = """
+        › Write tests for @filename
+        gpt-5.6-sol low · ~/Documents/Projects
+        """
+        claude = """
+        ❯ Ask Claude to do anything
+        manual mode on · ? for shortcuts
+        """
+        self.assertTrue(dashboard._detect_agent_input_ready(codex))
+        self.assertTrue(dashboard._detect_agent_input_ready(claude))
 
 
 class DashboardPanelStateContractTests(unittest.TestCase):
@@ -1191,6 +1278,134 @@ class DashboardAuthenticationTests(unittest.TestCase):
             "working directory does not exist: "
             "/definitely/missing/working/directory",
         )
+
+    def test_session_read_returns_bounded_tmux_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            run_dir = outputs / "demo-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "session.json").write_text(json.dumps({
+                "name": "demo",
+                "tmux_session": "orch-demo",
+                "log_file": "logs/demo.log",
+            }))
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+            with patch.object(dashboard, "tmux_alive", return_value=True), \
+                    patch.object(
+                        dashboard, "tmux_capture_lines",
+                        return_value="line 2\nline 3\n",
+                    ) as capture:
+                with TestClient(app) as client:
+                    response = client.get(
+                        "/api/sessions/demo-run::demo/read",
+                        params={"lines": 2, "position": "tail"},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source"], "tmux")
+        self.assertEqual(response.json()["returned_lines"], 2)
+        self.assertEqual(response.json()["text"], "line 2\nline 3\n")
+        capture.assert_called_once_with("orch-demo", 2, "tail")
+
+    def test_delegate_persists_parent_config_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            outputs = temp / "outputs"
+            parent_dir = outputs / "parent-run"
+            parent_dir.mkdir(parents=True)
+            linked = temp / "project"
+            linked.mkdir()
+            (parent_dir / "session.json").write_text(json.dumps({
+                "name": "parent",
+                "label": "Parent task",
+                "cwd": str(temp),
+                "terminal_theme": "soft-green",
+                "linked_folders": [{
+                    "path": str(linked), "label": "Project", "type": "folder",
+                }],
+            }))
+            scripts = temp / "scripts"
+            scripts.mkdir()
+            counter = temp / "spawn-count"
+            fake_run = scripts / "run.sh"
+            fake_run.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                f"counter = pathlib.Path({str(counter)!r})\n"
+                "count = int(counter.read_text()) if counter.exists() else 0\n"
+                "counter.write_text(str(count + 1))\n"
+                "args = sys.argv[1:]\n"
+                "run_name = args[args.index('--run-name') + 1]\n"
+                "label = args[args.index('--label') + 1]\n"
+                "model = args[args.index('--model') + 1]\n"
+                "effort = args[args.index('--effort') + 1]\n"
+                "theme = args[args.index('--theme') + 1]\n"
+                "agent, name, cwd = args[-3:]\n"
+                "run_dir = pathlib.Path(os.environ['ORCH_OUTPUTS_DIR']) / run_name\n"
+                "run_dir.mkdir(parents=True)\n"
+                "(run_dir / 'session.json').write_text(json.dumps({\n"
+                "  'name': name, 'label': label, 'agent': agent, 'cwd': cwd,\n"
+                "  'model': model, 'effort': effort, 'terminal_theme': theme,\n"
+                "  'tmux_session': 'orch-delegated-test',\n"
+                "  'log_file': f'logs/{name}.log', 'linked_folders': []\n"
+                "}))\n"
+                "print('Session: orch-delegated-test')\n"
+                "print(f'Output:  {run_dir}')\n"
+            )
+            fake_run.chmod(fake_run.stat().st_mode | stat.S_IXUSR)
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+            request = {
+                "parent_run_id": "parent-run::parent",
+                "agent": "claude",
+                "model": "claude-opus-test",
+                "effort": "xhigh",
+                "label": "delegated-child",
+                "priority": "lead",
+                "prompt": "Reply exactly DELEGATE_OK.",
+                "idempotency_key": "unit-delegate-1",
+            }
+            with patch.object(dashboard, "SCRIPTS_DIR", scripts), \
+                    patch.object(
+                        dashboard, "_deliver_first_prompt",
+                        new=AsyncMock(return_value=True),
+                    ):
+                with TestClient(app) as client:
+                    first = client.post("/api/delegate", json=request)
+                    second = client.post("/api/delegate", json=request)
+                    changed = client.post("/api/delegate", json={
+                        **request, "prompt": "This must not create a new child.",
+                    })
+                    deadline = time.time() + 2
+                    child_json = None
+                    while time.time() < deadline:
+                        if first.status_code == 200:
+                            candidate = Path(first.json()["run_dir"]) / "session.json"
+                            if candidate.exists():
+                                child_json = json.loads(candidate.read_text())
+                                if child_json.get("delegation_prompt_status") == "delivered":
+                                    break
+                        time.sleep(0.02)
+                    spawn_count = counter.read_text()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(changed.status_code, 409)
+        self.assertFalse(first.json()["replayed"])
+        self.assertTrue(second.json()["replayed"])
+        self.assertEqual(spawn_count, "1")
+        self.assertIsNotNone(child_json)
+        self.assertEqual(child_json["parent_run_id"], "parent-run::parent")
+        self.assertEqual(child_json["parent_display_name"], "Parent task")
+        self.assertEqual(child_json["model"], "claude-opus-test")
+        self.assertEqual(child_json["effort"], "xhigh")
+        self.assertEqual(child_json["panel_state"], "lead")
+        self.assertEqual(child_json["terminal_theme"], "soft-green")
+        self.assertEqual(child_json["linked_folders"][0]["path"], str(linked))
+        self.assertEqual(child_json["delegation_prompt_status"], "delivered")
 
     def test_sync_status_is_disabled_by_default(self):
         with TestClient(self.app) as client:

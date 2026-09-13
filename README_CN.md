@@ -199,6 +199,23 @@ orch run codex investigate /path/to/project
 
 浏览器和 CLI 工作流使用相同的本地 sessions 和 metadata。
 
+## 让一个 agent 把任务委派给另一个 agent
+
+Agent 不需要在发现额外工作后停下来等人手工开窗口。它可以直接从当前
+Orchestrator session 创建一个有独立名称、agent、model、effort、workspace 和
+优先级的子任务：
+
+```bash
+orch delegate --agent codex --model gpt-5.6-sol --effort high \
+  --label dependency-audit --priority p1 \
+  --prompt "检查 dependency update，并报告 targeted test evidence。"
+```
+
+子任务会立即出现在 Dashboard 中。默认继承父任务的 workspace 和 Linked Items，
+但运行在独立的 tmux session。Agent 还可以通过 `orch session` 列出 sessions、按
+指定行数读取 TTY 开头或结尾，以及向目标 session 发送 follow-up。完整流程、幂等
+自动化与远端节点行为见 [Agent 委派指南](docs/agent-delegation.md)。
+
 ## 在 macOS 后台常驻
 
 受管安装器会创建隔离运行环境、安装依赖、生成私有 token，并注册用户级

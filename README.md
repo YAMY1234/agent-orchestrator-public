@@ -219,6 +219,25 @@ orch run codex investigate /path/to/project
 
 The browser and CLI workflows use the same local sessions and metadata.
 
+## Let one agent delegate to another
+
+An agent does not have to stop at reporting that more work is needed. From an
+Orchestrator session it can create a named child task with an exact agent,
+model, effort, workspace, and priority:
+
+```bash
+orch delegate --agent codex --model gpt-5.6-sol --effort high \
+  --label dependency-audit --priority p1 \
+  --prompt "Audit the dependency update and report targeted test evidence."
+```
+
+The child appears in the Dashboard immediately. It inherits the parent
+workspace and Linked Items by default, while remaining an independent tmux
+session. Agents can also list sessions, read a bounded head or tail of their
+TTY history, and send follow-ups through `orch session` commands. See the
+[agent delegation guide](docs/agent-delegation.md) for the complete workflow,
+idempotent automation, and remote-node behavior.
+
 ## Keep it running on macOS
 
 The managed installer creates an isolated runtime, installs dependencies,
