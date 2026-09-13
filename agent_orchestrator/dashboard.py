@@ -708,6 +708,93 @@ def _runtime_effort_label(agent: str, effort: str) -> str:
     return aliases.get(value, value)
 
 
+_CODEX_RUNTIME_DEFAULT_RE = re.compile(
+    r"^(?P<key>model|model_reasoning_effort)\s*="
+)
+
+
+def _snapshot_codex_runtime_defaults(
+    path: Path | None = None,
+) -> tuple[Path, bool, dict[str, str | None]]:
+    if path is None:
+        codex_home = os.environ.get("CODEX_HOME", "").strip()
+        root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+        path = root / "config.toml"
+    existed = path.exists()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except FileNotFoundError:
+        lines = []
+    except OSError as exc:
+        raise RuntimeError(f"cannot snapshot Codex defaults: {exc}") from exc
+    defaults: dict[str, str | None] = {
+        "model": None,
+        "model_reasoning_effort": None,
+    }
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_table = True
+        match = None if in_table else _CODEX_RUNTIME_DEFAULT_RE.match(line)
+        if match and defaults[match.group("key")] is None:
+            defaults[match.group("key")] = line
+    return path, existed, defaults
+
+
+def _restore_codex_runtime_defaults(
+    snapshot: tuple[Path, bool, dict[str, str | None]],
+) -> None:
+    path, existed, defaults = snapshot
+    try:
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        lines = current.splitlines(keepends=True)
+        restored: list[str] = []
+        emitted: set[str] = set()
+        in_table = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_table = True
+            match = None if in_table else _CODEX_RUNTIME_DEFAULT_RE.match(line)
+            if not match:
+                restored.append(line)
+                continue
+            key = match.group("key")
+            original = defaults[key]
+            if original is not None and key not in emitted:
+                restored.append(original)
+                emitted.add(key)
+        missing = [
+            defaults[key]
+            for key in ("model", "model_reasoning_effort")
+            if defaults[key] is not None and key not in emitted
+        ]
+        value = "".join(str(line) for line in missing) + "".join(restored)
+        if not existed and not value.strip():
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = (path.stat().st_mode & 0o777) if path.exists() else 0o600
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=str(path.parent), text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(value)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_name, mode)
+            os.replace(temp_name, path)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        raise RuntimeError(f"cannot restore Codex defaults: {exc}") from exc
+
+
 async def _wait_for_terminal_text(
     session: str,
     predicate: Callable[[str], bool],
@@ -835,10 +922,17 @@ async def _configure_agent_runtime(
     effort: str,
 ) -> dict[str, str]:
     """Drive an idle Codex/Claude model picker without changing global defaults."""
+    codex_defaults = (
+        _snapshot_codex_runtime_defaults() if agent == "codex" else None
+    )
     with _runtime_picker_geometry(session):
-        return await _configure_agent_runtime_picker(
-            session=session, agent=agent, model=model, effort=effort,
-        )
+        try:
+            return await _configure_agent_runtime_picker(
+                session=session, agent=agent, model=model, effort=effort,
+            )
+        finally:
+            if codex_defaults is not None:
+                _restore_codex_runtime_defaults(codex_defaults)
 
 
 async def _configure_agent_runtime_picker(

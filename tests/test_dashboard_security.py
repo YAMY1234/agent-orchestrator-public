@@ -585,6 +585,33 @@ class DashboardAgentExitDetectionTests(unittest.TestCase):
             4: "Sonnet ✔ Sonnet 5",
         }, "sonnet"), 4)
 
+    def test_codex_runtime_picker_restores_only_top_level_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config.toml"
+            config.write_text(
+                'model = "original-model"\n'
+                'model_reasoning_effort = "xhigh"\n'
+                '[profiles.review]\n'
+                'model = "profile-model"\n'
+            )
+            snapshot = dashboard._snapshot_codex_runtime_defaults(config)
+            config.write_text(
+                'model = "temporary-model"\n'
+                'model_reasoning_effort = "low"\n'
+                'new_setting = true\n'
+                '[profiles.review]\n'
+                'model = "profile-model"\n'
+            )
+
+            dashboard._restore_codex_runtime_defaults(snapshot)
+            restored = config.read_text()
+
+        self.assertIn('model = "original-model"', restored)
+        self.assertIn('model_reasoning_effort = "xhigh"', restored)
+        self.assertIn('new_setting = true', restored)
+        self.assertIn('model = "profile-model"', restored)
+        self.assertNotIn('temporary-model', restored)
+
 
 class DashboardPanelStateContractTests(unittest.TestCase):
     @classmethod
