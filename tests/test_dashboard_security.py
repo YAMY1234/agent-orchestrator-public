@@ -542,6 +542,25 @@ class DashboardAgentExitDetectionTests(unittest.TestCase):
         self.assertTrue(dashboard._detect_agent_input_ready(codex))
         self.assertTrue(dashboard._detect_agent_input_ready(claude))
 
+    def test_agent_input_ready_rejects_claude_model_modals(self):
+        picker = """
+        Select model
+        ❯ 4. Sonnet  Sonnet 5
+        Enter to set as default · s to use this session only
+        ❯ Ask Claude to do anything
+        manual mode on · ? for shortcuts
+        """
+        confirmation = """
+        Switch model?
+        ❯ 1. Yes, switch to Sonnet 5
+          2. No, go back
+        ❯ Ask Claude to do anything
+        manual mode on · ? for shortcuts
+        """
+
+        self.assertFalse(dashboard._detect_agent_input_ready(picker))
+        self.assertFalse(dashboard._detect_agent_input_ready(confirmation))
+
     def test_delegated_prompt_detects_only_matching_editable_draft(self):
         pending = """
         › Reply with exactly OMNI_DELEGATE_OK.

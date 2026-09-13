@@ -69,13 +69,18 @@ orch session send <run-id> --file ./follow-up.md
 The default submits the text with Enter. Add `--no-enter` to stage text in the
 target input without submitting it.
 
-Codex goals use the same message path, for example:
+Native goals use the same message path. Codex supports its full lifecycle:
 
 ```bash
 orch session send <run-id> "/goal Investigate the regression and preserve evidence."
 orch session send <run-id> "/goal edit"
 orch session send <run-id> "/goal clear"
 ```
+
+Claude Code supports `/goal <condition>`, no-argument `/goal` for status, and
+`/goal clear`. Setting a new condition replaces the active one. It does not
+provide native `/goal edit`, `/goal pause`, or `/goal resume`; an unfinished
+goal is restored when its Claude session is resumed.
 
 ## Change model or effort in place
 

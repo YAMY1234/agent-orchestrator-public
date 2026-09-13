@@ -597,6 +597,9 @@ def _detect_agent_input_ready(text: str) -> bool:
             "press enter to continue",
             "do you trust the contents of this directory",
             "update available!",
+            "select model",
+            "enter to set as default",
+            "switch model?",
         )
     ):
         return False
