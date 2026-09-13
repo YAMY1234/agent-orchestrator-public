@@ -464,6 +464,25 @@ class DashboardAgentExitDetectionTests(unittest.TestCase):
         self.assertTrue(dashboard._detect_agent_input_ready(codex))
         self.assertTrue(dashboard._detect_agent_input_ready(claude))
 
+    def test_delegated_prompt_detects_only_matching_editable_draft(self):
+        pending = """
+        › Reply with exactly OMNI_DELEGATE_OK.
+        gpt-5.6-sol low · ~/Projects
+        """
+        completed = """
+        › Reply with exactly OMNI_DELEGATE_OK.
+        • OMNI_DELEGATE_OK.
+        › Ask Codex to do anything
+        gpt-5.6-sol low · ~/Projects
+        """
+
+        self.assertTrue(dashboard._delegated_prompt_still_editing(
+            pending, "Reply with exactly OMNI_DELEGATE_OK."
+        ))
+        self.assertFalse(dashboard._delegated_prompt_still_editing(
+            completed, "Reply with exactly OMNI_DELEGATE_OK."
+        ))
+
 
 class DashboardPanelStateContractTests(unittest.TestCase):
     @classmethod

@@ -513,6 +513,7 @@ def _tmux_send_keys(argv: list, *, retries: int = 2,
 # testing on cursor-agent v2026.04.30 with text up to 4 KB confirms 0.2s
 # kills the residual-draft bug while keeping send latency near-imperceptible.
 PASTE_ENTER_DELAY_S = 0.2
+FIRST_PROMPT_SUBMIT_CHECK_DELAY_S = 0.75
 
 
 def tmux_send(session: str, text: str, literal: bool = True, enter: bool = False) -> tuple[bool, str]:
@@ -616,6 +617,33 @@ def _detect_agent_input_ready(text: str) -> bool:
     return False
 
 
+def _delegated_prompt_still_editing(text: str, prompt: str) -> bool:
+    """Return true when ``prompt`` is still sitting in the agent editor.
+
+    A successful Enter moves the submitted prompt into transcript history and
+    either starts agent output or reveals a fresh input placeholder.  A lost
+    Enter leaves the same prompt as the latest input line beside the model /
+    shortcut footer.  Requiring both a ready editor and a matching latest
+    prompt avoids resubmitting after a fast response has already completed.
+    """
+    if not prompt or not _detect_agent_input_ready(text):
+        return False
+    latest = ""
+    for raw in reversed((text or "").splitlines()):
+        line = _mission_clean_line(raw).strip()
+        if not line.startswith(("›", "❯", ">")):
+            continue
+        if re.match(r"^[›❯>]\s*\d+\.", line):
+            continue
+        latest = " ".join(line[1:].split())
+        break
+    expected = " ".join(prompt.split())
+    if not latest or not expected:
+        return False
+    prefix_len = min(48, len(expected))
+    return latest.startswith(expected[:prefix_len])
+
+
 async def _deliver_first_prompt(session: str, prompt: str,
                                 ready_timeout: float = 30.0,
                                 grace: float = 2.0) -> bool:
@@ -648,7 +676,23 @@ async def _deliver_first_prompt(session: str, prompt: str,
             return False
         await _a.sleep(0.2)
         ok, _ = tmux_send(session, "", literal=True, enter=True)
-        return ok
+        if not ok:
+            return False
+
+        # Under load, Codex can render its real input box just before the TUI
+        # has fully attached its submit handler. tmux accepts the first Enter,
+        # but the prompt remains an editable draft. Confirm the state once and
+        # retry a *bare* Enter only when that exact draft is still visible.
+        await _a.sleep(FIRST_PROMPT_SUBMIT_CHECK_DELAY_S)
+        capture = tmux_capture(session, history=False)
+        if _delegated_prompt_still_editing(capture, prompt):
+            ok, _ = tmux_send(session, "", literal=True, enter=True)
+            if not ok:
+                return False
+            await _a.sleep(FIRST_PROMPT_SUBMIT_CHECK_DELAY_S)
+            capture = tmux_capture(session, history=False)
+            return not _delegated_prompt_still_editing(capture, prompt)
+        return True
     except Exception:
         return False
 
