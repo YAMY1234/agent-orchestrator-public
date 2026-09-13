@@ -51,12 +51,13 @@ orch session status <run-id> --json
 orch session read "$ORCH_RUN_ID" --head -n 80
 orch session read <run-id> -n 200
 orch session read <run-id> -n 200 --json
+orch session read <run-id> --all --head
 ```
 
 `read` returns joined plain text from tmux while the session is alive and falls
-back to the persisted log after it exits. Reads are explicitly bounded to
-1–5,000 lines, so an agent does not need to ingest an entire transcript just
-to understand recent state.
+back to the persisted log after it exits. The default is a 200-line tail.
+Explicit `--all` reads up to the complete 50,000-line tmux scrollback; use it
+only when the recent tail is insufficient.
 
 ## Send a follow-up
 

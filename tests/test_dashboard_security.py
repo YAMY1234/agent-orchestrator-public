@@ -160,6 +160,26 @@ class LocalSettingsTests(unittest.TestCase):
             "?lines=25&position=tail",
         )
 
+    def test_session_read_cli_all_requests_complete_scrollback(self):
+        args = SimpleNamespace(
+            run_id="task-one",
+            head=True,
+            lines=200,
+            all=True,
+            json=False,
+            dashboard_url="",
+            dashboard_token="",
+        )
+        with patch.object(
+            cli, "_dashboard_api_request", return_value={"text": "first line\n"},
+        ) as api, patch.object(sys, "stdout", io.StringIO()):
+            cli.cmd_session_read(args)
+
+        self.assertEqual(
+            api.call_args.args[1],
+            "/api/sessions/task-one/read?lines=50000&position=head",
+        )
+
     def test_session_configure_cli_preserves_exact_runtime_values(self):
         args = SimpleNamespace(
             run_id="devbox::child run/task",

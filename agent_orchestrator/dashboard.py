@@ -8984,7 +8984,7 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
     @app.get("/api/sessions/{run_id}/read")
     def read_session(
         run_id: str,
-        lines: int = Query(200, ge=1, le=5000),
+        lines: int = Query(200, ge=1, le=50000),
         position: str = Query("tail", pattern="^(head|tail)$"),
     ):
         """Read a bounded head/tail of one terminal, falling back to its log."""

@@ -984,13 +984,14 @@ def cmd_session_list(args):
 
 def cmd_session_read(args):
     position = "head" if args.head else "tail"
+    lines = 50000 if getattr(args, "all", False) else args.lines
     run_id = args.run_id or os.environ.get("ORCH_RUN_ID", "")
     if not run_id:
         raise SystemExit("run_id is required outside an Orchestrator session")
     payload = _dashboard_api_request(
         args,
         f"/api/sessions/{quote(run_id, safe='')}/read"
-        f"?lines={args.lines}&position={position}",
+        f"?lines={lines}&position={position}",
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1407,7 +1408,11 @@ def main():
     )
     p_session_read.add_argument(
         "-n", "--lines", type=int, default=200,
-        help="number of lines, 1-5000 (default: 200)",
+        help="number of lines, 1-50000 (default: 200)",
+    )
+    p_session_read.add_argument(
+        "--all", action="store_true",
+        help="read up to the complete 50,000-line tmux scrollback",
     )
     p_session_read.add_argument(
         "--head", action="store_true", help="read from the history beginning",
