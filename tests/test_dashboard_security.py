@@ -109,6 +109,35 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertEqual(body["effort"], "xhigh")
         self.assertEqual(body["priority"], "lead")
 
+    def test_cross_node_delegate_does_not_inherit_local_parent(self):
+        args = SimpleNamespace(
+            prompt_file="",
+            prompt="Do the remote child task.",
+            parent="",
+            agent="codex",
+            model="gpt-5.6-sol",
+            effort="high",
+            effort_mode="",
+            label="remote-child",
+            cwd="",
+            priority="p1",
+            inherit_linked_items=True,
+            idempotency_key="remote-child-1",
+            node="devbox",
+            json=True,
+            dashboard_url="",
+            dashboard_token="",
+        )
+        with patch.dict(os.environ, {"ORCH_RUN_ID": "local-parent::parent"}), \
+                patch.object(
+                    cli, "_dashboard_api_request", return_value={"ok": True},
+                ) as api, patch.object(sys, "stdout", io.StringIO()):
+            cli.cmd_delegate(args)
+
+        body = api.call_args.kwargs["body"]
+        self.assertEqual(body["parent_run_id"], "")
+        self.assertEqual(body["node_id"], "devbox")
+
     def test_session_read_cli_url_quotes_remote_run_id(self):
         args = SimpleNamespace(
             run_id="remote run::task/one",

@@ -911,7 +911,10 @@ def cmd_delegate(args):
         prompt = args.prompt
 
     body = {
-        "parent_run_id": args.parent or os.environ.get("ORCH_RUN_ID", ""),
+        "parent_run_id": (
+            args.parent
+            or ("" if args.node else os.environ.get("ORCH_RUN_ID", ""))
+        ),
         "agent": args.agent,
         "model": args.model,
         "effort": args.effort,
