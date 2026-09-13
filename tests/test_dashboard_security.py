@@ -73,6 +73,72 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertEqual(dashboard.SCRIPTS_DIR, project_dir / "scripts")
         self.assertEqual(local_settings.PROJECT_DIR, project_dir)
 
+    def test_claude_workspace_trust_resolves_compatibility_symlink(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            project = home / "Projects"
+            alias_parent = root / "Users" / "example" / "Documents"
+            home.mkdir()
+            project.mkdir()
+            alias_parent.mkdir(parents=True)
+            (alias_parent / "Projects").symlink_to(project, target_is_directory=True)
+            config = root / "claude.json"
+            config.write_text(json.dumps({
+                "projects": {
+                    str(project): {"hasTrustDialogAccepted": True},
+                },
+            }))
+
+            trusted, resolved, reason = dashboard._claude_workspace_trust_status(
+                str(alias_parent / "Projects"),
+                config_path=config,
+                home=home,
+            )
+
+        self.assertTrue(trusted)
+        self.assertEqual(resolved, str(project.resolve()))
+        self.assertEqual(reason, "saved trust accepted")
+
+    def test_claude_workspace_trust_rejects_new_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            trusted_project = home / "trusted"
+            new_project = home / "new"
+            trusted_project.mkdir(parents=True)
+            new_project.mkdir()
+            config = root / "claude.json"
+            config.write_text(json.dumps({
+                "projects": {
+                    str(trusted_project): {"hasTrustDialogAccepted": True},
+                },
+            }))
+
+            trusted, resolved, reason = dashboard._claude_workspace_trust_status(
+                str(new_project), config_path=config, home=home,
+            )
+
+        self.assertFalse(trusted)
+        self.assertEqual(resolved, str(new_project.resolve()))
+        self.assertEqual(reason, "no saved trust decision for this directory")
+
+    def test_claude_workspace_trust_fails_open_for_unknown_schema(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            project = home / "project"
+            project.mkdir(parents=True)
+            config = root / "claude.json"
+            config.write_text(json.dumps({"projects": {str(project): {}}}))
+
+            trusted, _, reason = dashboard._claude_workspace_trust_status(
+                str(project), config_path=config, home=home,
+            )
+
+        self.assertIsNone(trusted)
+        self.assertEqual(reason, "Claude trust store format is unknown")
+
     def test_delegate_cli_preserves_exact_model_effort_and_parent(self):
         args = SimpleNamespace(
             prompt_file="",
@@ -1601,6 +1667,10 @@ class DashboardAuthenticationTests(unittest.TestCase):
             }
             with patch.object(dashboard, "SCRIPTS_DIR", scripts), \
                     patch.object(
+                        dashboard, "_claude_workspace_trust_status",
+                        return_value=(True, str(temp), "saved trust accepted"),
+                    ), \
+                    patch.object(
                         dashboard, "_deliver_first_prompt",
                         new=AsyncMock(return_value=True),
                     ):
@@ -1637,6 +1707,34 @@ class DashboardAuthenticationTests(unittest.TestCase):
         self.assertEqual(child_json["terminal_theme"], "soft-green")
         self.assertEqual(child_json["linked_folders"][0]["path"], str(linked))
         self.assertEqual(child_json["delegation_prompt_status"], "delivered")
+
+    def test_delegate_fast_fails_before_spawning_in_untrusted_claude_cwd(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            outputs = temp / "outputs"
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+            with patch.object(
+                dashboard, "_claude_workspace_trust_status",
+                return_value=(
+                    False, str(temp),
+                    "no saved trust decision for this directory",
+                ),
+            ):
+                with TestClient(app) as client:
+                    response = client.post("/api/delegate", json={
+                        "agent": "claude",
+                        "cwd": str(temp),
+                        "label": "must-not-spawn",
+                        "prompt": "Do not send this prompt.",
+                    })
+
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertIn("workspace trust is not accepted", detail)
+        self.assertIn("No session was created", detail)
+        self.assertFalse(any(outputs.glob("must-not-spawn-*")))
 
     def test_sync_status_is_disabled_by_default(self):
         with TestClient(self.app) as client:

@@ -621,6 +621,83 @@ def _detect_agent_input_ready(text: str) -> bool:
     return False
 
 
+def _claude_workspace_trust_status(
+    cwd: str,
+    *,
+    config_path: Optional[Path] = None,
+    home: Optional[Path] = None,
+) -> tuple[Optional[bool], str, str]:
+    """Return Claude Code's saved trust state for ``cwd``.
+
+    ``True`` and ``False`` are returned only when the current Claude Code
+    per-directory trust schema is recognizable. ``None`` deliberately means
+    "unknown" so a missing, unreadable, or future config format never blocks
+    session creation. Paths are resolved before lookup because remote nodes
+    can expose a project directory through a compatibility symlink.
+    """
+    logical = Path(os.path.expandvars(os.path.expanduser(cwd))).absolute()
+    try:
+        resolved = logical.resolve()
+    except OSError:
+        resolved = logical
+    resolved_text = str(resolved)
+
+    home_path = Path(home) if home is not None else Path.home()
+    try:
+        resolved_home = home_path.expanduser().resolve()
+    except OSError:
+        resolved_home = home_path.expanduser().absolute()
+    if resolved == resolved_home:
+        return False, resolved_text, "home-directory trust is session-only"
+
+    path = config_path or (home_path.expanduser() / ".claude.json")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, resolved_text, "Claude trust store is unavailable"
+    if not isinstance(payload, dict):
+        return None, resolved_text, "Claude trust store format is unknown"
+    projects = payload.get("projects")
+    if not isinstance(projects, dict):
+        return None, resolved_text, "Claude trust store format is unknown"
+
+    # Do not infer "untrusted" from a missing entry unless the file contains
+    # the schema field used by this installed Claude Code generation.
+    schema_known = any(
+        isinstance(value, dict) and "hasTrustDialogAccepted" in value
+        for value in projects.values()
+    )
+    if not schema_known:
+        return None, resolved_text, "Claude trust store format is unknown"
+
+    matching_entry: Optional[dict[str, Any]] = None
+    direct_candidates = (str(logical), resolved_text)
+    for candidate in direct_candidates:
+        value = projects.get(candidate)
+        if isinstance(value, dict):
+            matching_entry = value
+            break
+    if matching_entry is None:
+        for saved_path, value in projects.items():
+            if not isinstance(saved_path, str) or not isinstance(value, dict):
+                continue
+            try:
+                saved_resolved = Path(saved_path).expanduser().resolve()
+            except OSError:
+                continue
+            if saved_resolved == resolved:
+                matching_entry = value
+                break
+
+    if matching_entry is None:
+        return False, resolved_text, "no saved trust decision for this directory"
+    accepted = matching_entry.get("hasTrustDialogAccepted")
+    if isinstance(accepted, bool):
+        reason = "saved trust accepted" if accepted else "saved trust not accepted"
+        return accepted, resolved_text, reason
+    return None, resolved_text, "Claude trust entry format is unknown"
+
+
 def _delegated_prompt_still_editing(text: str, prompt: str) -> bool:
     """Return true when ``prompt`` is still sitting in the agent editor.
 
@@ -10030,6 +10107,17 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
         if not raw_cwd and parent:
             raw_cwd = str(parent.get("cwd") or "")
         cwd = _resolve_default_cwd(raw_cwd)
+        if agent == "claude":
+            trusted, trust_cwd, trust_reason = _claude_workspace_trust_status(cwd)
+            if trusted is False:
+                trust_cmd = f"cd {shlex.quote(trust_cwd)} && claude"
+                raise HTTPException(
+                    409,
+                    "Claude Code workspace trust is not accepted for "
+                    f"{trust_cwd} ({trust_reason}). No session was created. "
+                    f"Run `{trust_cmd}`, choose 'Yes, I trust this folder', "
+                    "exit Claude, then retry the delegation.",
+                )
         terminal_theme = (
             _normalize_terminal_theme(str(body.get("terminal_theme") or ""))
             if "terminal_theme" in body
