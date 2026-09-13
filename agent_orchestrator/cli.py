@@ -995,6 +995,41 @@ def cmd_session_read(args):
         sys.stdout.write(str(payload.get("text") or ""))
 
 
+def cmd_session_status(args):
+    run_id = args.run_id or os.environ.get("ORCH_RUN_ID", "")
+    if not run_id:
+        raise SystemExit("run_id is required outside an Orchestrator session")
+    payload = _dashboard_api_request(
+        args,
+        f"/api/sessions/{quote(run_id, safe='')}",
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    activity = payload.get("native_activity")
+    if not isinstance(activity, dict):
+        activity = {}
+    mission = payload.get("mission_control")
+    if not isinstance(mission, dict):
+        mission = {}
+    progress = mission.get("progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    busy = bool(payload.get("busy") or payload.get("background_active"))
+    print(f"Run:      {payload.get('run_id', run_id)}")
+    print(f"Name:     {payload.get('display_name') or payload.get('task') or ''}")
+    print(f"Alive:    {bool(payload.get('alive'))}")
+    print(f"Busy:     {busy}")
+    print(f"Activity: {activity.get('state') or mission.get('state') or 'unknown'}")
+    print(f"Goal:     {progress.get('goal_state') or 'unknown'}")
+    print(
+        "Runtime:  "
+        f"{payload.get('agent') or 'unknown'} / "
+        f"{payload.get('model') or 'default'} / "
+        f"effort={payload.get('effort') or 'default'}"
+    )
+
+
 def cmd_session_send(args):
     if args.file:
         if args.file == "-":
@@ -1021,6 +1056,28 @@ def cmd_session_send(args):
             f"Sent {payload.get('bytes_sent', len(text))} characters to "
             f"{payload.get('session', args.run_id)}"
         )
+
+
+def cmd_session_configure(args):
+    run_id = args.run_id or os.environ.get("ORCH_RUN_ID", "")
+    if not run_id:
+        raise SystemExit("run_id is required outside an Orchestrator session")
+    if not args.model and not args.effort:
+        raise SystemExit("--model or --effort is required")
+    payload = _dashboard_api_request(
+        args,
+        f"/api/sessions/{quote(run_id, safe='')}/runtime-config",
+        method="POST",
+        body={"model": args.model, "effort": args.effort},
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(
+        f"Configured {payload.get('session', run_id)}: "
+        f"{payload.get('model') or 'default'} / "
+        f"effort={payload.get('effort') or 'default'}"
+    )
 
 
 def cmd_url(args):
@@ -1312,7 +1369,7 @@ def main():
     p_delegate.set_defaults(func=cmd_delegate)
 
     p_session = sub.add_parser(
-        "session", help="List, read, or send to Dashboard sessions",
+        "session", help="List, inspect, read, send, or configure sessions",
     )
     session_sub = p_session.add_subparsers(dest="session_command", required=True)
 
@@ -1326,6 +1383,17 @@ def main():
     p_session_list.add_argument("--json", action="store_true")
     _add_dashboard_client_args(p_session_list)
     p_session_list.set_defaults(func=cmd_session_list)
+
+    p_session_status = session_sub.add_parser(
+        "status", help="Inspect one session's live state",
+    )
+    p_session_status.add_argument(
+        "run_id", nargs="?", default="",
+        help="run id (default: $ORCH_RUN_ID)",
+    )
+    p_session_status.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_session_status)
+    p_session_status.set_defaults(func=cmd_session_status)
 
     p_session_read = session_sub.add_parser(
         "read", help="Read a bounded terminal/log head or tail",
@@ -1360,6 +1428,23 @@ def main():
     p_session_send.add_argument("--json", action="store_true")
     _add_dashboard_client_args(p_session_send)
     p_session_send.set_defaults(func=cmd_session_send)
+
+    p_session_configure = session_sub.add_parser(
+        "configure", help="Change an idle Codex/Claude model or effort",
+    )
+    p_session_configure.add_argument(
+        "run_id", nargs="?", default="",
+        help="run id (default: $ORCH_RUN_ID)",
+    )
+    p_session_configure.add_argument(
+        "--model", default="", help="exact model shown by the agent picker",
+    )
+    p_session_configure.add_argument(
+        "--effort", default="", help="exact reasoning effort",
+    )
+    p_session_configure.add_argument("--json", action="store_true")
+    _add_dashboard_client_args(p_session_configure)
+    p_session_configure.set_defaults(func=cmd_session_configure)
 
     p_organize = sub.add_parser("organize", help="Classify unarchived sessions into projects, then prune")
     p_organize.add_argument("agent", nargs="?", default="cursor", help="Agent type: cursor, claude (default: cursor)")

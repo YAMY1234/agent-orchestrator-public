@@ -131,6 +131,35 @@ class LocalSettingsTests(unittest.TestCase):
             "?lines=25&position=tail",
         )
 
+    def test_session_configure_cli_preserves_exact_runtime_values(self):
+        args = SimpleNamespace(
+            run_id="devbox::child run/task",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+            json=True,
+            dashboard_url="",
+            dashboard_token="",
+        )
+        response = {
+            "ok": True,
+            "session": "orch-child",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh",
+        }
+        with patch.object(
+            cli, "_dashboard_api_request", return_value=response,
+        ) as api, patch.object(sys, "stdout", io.StringIO()):
+            cli.cmd_session_configure(args)
+
+        self.assertEqual(
+            api.call_args.args[1],
+            "/api/sessions/devbox%3A%3Achild%20run%2Ftask/runtime-config",
+        )
+        self.assertEqual(api.call_args.kwargs["body"], {
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh",
+        })
+
     def test_launchagent_renderer_escapes_values_and_hides_token(self):
         template = Path("launchd/com.user.orch-dashboard.plist.template")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -482,6 +511,50 @@ class DashboardAgentExitDetectionTests(unittest.TestCase):
         self.assertFalse(dashboard._delegated_prompt_still_editing(
             completed, "Reply with exactly OMNI_DELEGATE_OK."
         ))
+
+    def test_numbered_menu_state_parses_codex_and_claude_pickers(self):
+        codex = """
+        Select Model and Effort
+          1. gpt-5.6-sol
+        › 2. gpt-5.6-terra
+          3. gpt-5.6-luna
+        Press enter to confirm
+        """
+        claude = """
+        Select model
+        ↑ 3. Fable     Fable 5.1
+        ❯ 4. Sonnet ✔  Sonnet 5
+          5. Haiku     Haiku 4.5
+        Enter to set as default · s to use this session only
+        """
+
+        self.assertEqual(
+            dashboard._numbered_menu_state(codex, "Select Model and Effort"),
+            (2, {
+                1: "gpt-5.6-sol",
+                2: "gpt-5.6-terra",
+                3: "gpt-5.6-luna",
+            }),
+        )
+        self.assertEqual(
+            dashboard._numbered_menu_state(claude, "Select model"),
+            (4, {
+                3: "Fable Fable 5.1",
+                4: "Sonnet ✔ Sonnet 5",
+                5: "Haiku Haiku 4.5",
+            }),
+        )
+        self.assertEqual(
+            dashboard._claude_effort_from_menu(
+                "◐ Medium effort ←/→ to adjust"
+            ),
+            "medium",
+        )
+        self.assertEqual(dashboard._numbered_menu_target({
+            1: "Default (recommended) Sonnet 4.6 · Org default",
+            3: "Fable Fable 5.1",
+            4: "Sonnet ✔ Sonnet 5",
+        }, "sonnet"), 4)
 
 
 class DashboardPanelStateContractTests(unittest.TestCase):
@@ -1327,6 +1400,50 @@ class DashboardAuthenticationTests(unittest.TestCase):
         self.assertEqual(response.json()["returned_lines"], 2)
         self.assertEqual(response.json()["text"], "line 2\nline 3\n")
         capture.assert_called_once_with("orch-demo", 2, "tail")
+
+    def test_runtime_config_updates_live_session_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outputs = Path(temp_dir) / "outputs"
+            run_dir = outputs / "runtime-run"
+            run_dir.mkdir(parents=True)
+            session_json = run_dir / "session.json"
+            session_json.write_text(json.dumps({
+                "name": "runtime-demo",
+                "agent": "codex",
+                "model": "gpt-5.6-terra",
+                "effort": "low",
+                "tmux_session": "orch-runtime-demo",
+                "log_file": "logs/runtime-demo.log",
+            }))
+            app = dashboard.create_app(
+                outputs, ttyd_enabled=False, remote_nodes_enabled=False,
+            )
+            configure = AsyncMock(return_value={
+                "model": "gpt-5.6-sol", "effort": "high",
+            })
+            with patch.object(dashboard, "tmux_alive", return_value=True), \
+                    patch.object(
+                        dashboard, "_configure_agent_runtime", new=configure,
+                    ):
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/api/sessions/runtime-run::runtime-demo/runtime-config",
+                        json={"model": "gpt-5.6-sol", "effort": "high"},
+                    )
+            persisted = json.loads(session_json.read_text())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["model"], "gpt-5.6-sol")
+        self.assertEqual(response.json()["effort"], "high")
+        configure.assert_awaited_once_with(
+            session="orch-runtime-demo",
+            agent="codex",
+            model="gpt-5.6-sol",
+            effort="high",
+        )
+        self.assertEqual(persisted["model"], "gpt-5.6-sol")
+        self.assertEqual(persisted["effort"], "high")
+        self.assertTrue(persisted["runtime_config_updated_at"])
 
     def test_delegate_persists_parent_config_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:

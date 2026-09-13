@@ -19,6 +19,7 @@ Endpoints:
     GET  /api/sessions/{run_id}/pane  -> live tmux capture-pane text
     GET  /api/sessions/{run_id}/log   -> raw log file tail
     POST /api/sessions/{run_id}/send  -> tmux send-keys {text, enter, literal}
+    POST /api/sessions/{run_id}/runtime-config -> change model / effort
     POST /api/sessions/{run_id}/state -> update state.json fields
     POST /api/sessions/{run_id}/stop  -> graceful stop + save resume metadata
     POST /api/sessions/{run_id}/kill  -> force tmux kill-session
@@ -52,7 +53,7 @@ import textwrap
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -642,6 +643,314 @@ def _delegated_prompt_still_editing(text: str, prompt: str) -> bool:
         return False
     prefix_len = min(48, len(expected))
     return latest.startswith(expected[:prefix_len])
+
+
+_NUMBERED_MENU_OPTION_RE = re.compile(
+    r"^\s*(?:[↑↓]\s*)?(?P<selected>[›❯])?\s*"
+    r"(?P<index>\d+)\.\s*(?P<label>.+?)\s*$"
+)
+
+
+def _numbered_menu_state(text: str, header: str) -> tuple[int, dict[int, str]]:
+    """Return the selected index and visible options below the last header."""
+    clean = [_mission_clean_line(line) for line in (text or "").splitlines()]
+    starts = [i for i, line in enumerate(clean) if header.lower() in line.lower()]
+    if not starts:
+        return 0, {}
+    selected = 0
+    options: dict[int, str] = {}
+    for line in clean[starts[-1] + 1:]:
+        lowered = line.lower()
+        if "press enter to confirm" in lowered or "enter to set as default" in lowered:
+            break
+        match = _NUMBERED_MENU_OPTION_RE.match(line)
+        if not match:
+            continue
+        index = int(match.group("index"))
+        options[index] = " ".join(match.group("label").split())
+        if match.group("selected"):
+            selected = index
+    return selected, options
+
+
+def _numbered_menu_target(options: dict[int, str], target: str) -> int:
+    normalized = target.strip().lower()
+    leading = [
+        index for index, label in options.items()
+        if label.lower() == normalized
+        or label.lower().startswith(f"{normalized} ")
+    ]
+    contained = [
+        index for index, label in options.items()
+        if normalized in label.lower()
+    ]
+    return leading[0] if leading else contained[0] if len(contained) == 1 else 0
+
+
+def _runtime_model_needle(agent: str, model: str) -> str:
+    value = " ".join(str(model or "").strip().lower().split())
+    if agent == "claude":
+        for alias in ("fable", "sonnet", "opus", "haiku"):
+            if alias in value:
+                return alias
+    return value
+
+
+def _runtime_effort_label(agent: str, effort: str) -> str:
+    value = str(effort or "").strip().lower().replace("_", "-")
+    if agent == "claude" and value in {"extra-high", "x-high", "xhigh"}:
+        return "xhigh"
+    aliases = {
+        "extra-high": "extra high",
+        "x-high": "extra high",
+        "xhigh": "extra high",
+    }
+    return aliases.get(value, value)
+
+
+async def _wait_for_terminal_text(
+    session: str,
+    predicate: Callable[[str], bool],
+    timeout: float = 5.0,
+) -> str:
+    deadline = time.time() + timeout
+    latest = ""
+    while time.time() < deadline:
+        latest = tmux_capture(session, history=False)
+        if predicate(latest):
+            return latest
+        await asyncio.sleep(0.1)
+    raise RuntimeError("agent menu did not reach the expected state")
+
+
+async def _select_numbered_terminal_option(
+    session: str,
+    *,
+    header: str,
+    target: str,
+) -> str:
+    visited: set[int] = set()
+    for _ in range(32):
+        screen = tmux_capture(session, history=False)
+        selected, options = _numbered_menu_state(screen, header)
+        target_index = _numbered_menu_target(options, target)
+        if not selected:
+            raise RuntimeError(f"cannot determine the selected {header!r} option")
+        if target_index:
+            key = "Down" if target_index > selected else "Up"
+            for _ in range(abs(target_index - selected)):
+                ok, err = tmux_send_key(session, key)
+                if not ok:
+                    raise RuntimeError(f"cannot navigate agent menu: {err}")
+                await asyncio.sleep(0.08)
+            screen = tmux_capture(session, history=False)
+            actual, _ = _numbered_menu_state(screen, header)
+            if actual != target_index:
+                raise RuntimeError(
+                    "agent menu selection did not move to the requested option"
+                )
+            return screen
+        if selected in visited:
+            break
+        visited.add(selected)
+        ok, err = tmux_send_key(session, "Down")
+        if not ok:
+            raise RuntimeError(f"cannot navigate agent menu: {err}")
+        await asyncio.sleep(0.08)
+    raise RuntimeError(
+        f"{target!r} is not an option in the agent's {header!r} menu"
+    )
+
+
+def _tmux_window_geometry(session: str) -> tuple[int, int, str] | None:
+    try:
+        size = subprocess.run(
+            [
+                "tmux", "display-message", "-p", "-t", session,
+                "#{window_width} #{window_height}",
+            ],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        mode = subprocess.run(
+            ["tmux", "show-options", "-w", "-v", "-t", session, "window-size"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if size.returncode != 0 or mode.returncode != 0:
+            return None
+        width, height = (int(value) for value in size.stdout.split())
+        return width, height, mode.stdout.strip() or "latest"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+@contextmanager
+def _runtime_picker_geometry(session: str):
+    """Give native pickers room to render, then restore the user's layout."""
+    original = _tmux_window_geometry(session)
+    resized = bool(original and (original[0] < 100 or original[1] < 36))
+    if resized:
+        ok, err = _tmux_send_keys(
+            ["tmux", "resize-window", "-t", session, "-x", "120", "-y", "40"],
+            timeout=5,
+        )
+        if not ok:
+            raise RuntimeError(f"cannot resize agent picker: {err}")
+        time.sleep(0.1)
+    try:
+        yield
+    finally:
+        if resized and original:
+            _tmux_send_keys(
+                [
+                    "tmux", "resize-window", "-t", session,
+                    "-x", str(original[0]), "-y", str(original[1]),
+                ],
+                timeout=5,
+            )
+            _tmux_send_keys(
+                [
+                    "tmux", "set-option", "-w", "-t", session,
+                    "window-size", original[2],
+                ],
+                timeout=5,
+            )
+
+
+def _claude_effort_from_menu(text: str) -> str:
+    for raw in reversed((text or "").splitlines()):
+        line = " ".join(_mission_clean_line(raw).split()).lower()
+        match = re.search(
+            r"\b(low|medium|xhigh|extra high|high|max|ultracode|ultra) effort\b",
+            line,
+        )
+        if match:
+            return match.group(1)
+    return ""
+
+
+async def _configure_agent_runtime(
+    session: str,
+    agent: str,
+    model: str,
+    effort: str,
+) -> dict[str, str]:
+    """Drive an idle Codex/Claude model picker without changing global defaults."""
+    with _runtime_picker_geometry(session):
+        return await _configure_agent_runtime_picker(
+            session=session, agent=agent, model=model, effort=effort,
+        )
+
+
+async def _configure_agent_runtime_picker(
+    session: str,
+    agent: str,
+    model: str,
+    effort: str,
+) -> dict[str, str]:
+    screen = tmux_capture(session, history=False)
+    if not _detect_agent_input_ready(screen):
+        raise RuntimeError("session is not waiting at an agent input prompt")
+    ok, err = tmux_send(session, "/model", literal=True, enter=True)
+    if not ok:
+        raise RuntimeError(f"cannot open agent model menu: {err}")
+
+    if agent == "codex":
+        header = "Select Model and Effort"
+        screen = await _wait_for_terminal_text(
+            session, lambda value: header.lower() in value.lower()
+        )
+        selected, options = _numbered_menu_state(screen, header)
+        model_needle = _runtime_model_needle(agent, model)
+        if model_needle:
+            await _select_numbered_terminal_option(
+                session, header=header, target=model_needle,
+            )
+        elif not selected or selected not in options:
+            raise RuntimeError("cannot determine the current Codex model")
+        ok, err = tmux_send_key(session, "Enter")
+        if not ok:
+            raise RuntimeError(f"cannot confirm Codex model: {err}")
+
+        effort_header = "Select Reasoning Level"
+        screen = await _wait_for_terminal_text(
+            session, lambda value: effort_header.lower() in value.lower()
+        )
+        effort_label = _runtime_effort_label(agent, effort)
+        if effort_label:
+            await _select_numbered_terminal_option(
+                session, header=effort_header, target=effort_label,
+            )
+        ok, err = tmux_send_key(session, "Enter")
+        if not ok:
+            raise RuntimeError(f"cannot confirm Codex effort: {err}")
+        await _wait_for_terminal_text(
+            session,
+            lambda value: effort_header.lower() not in value.lower(),
+        )
+        return {"model": model, "effort": effort}
+
+    if agent == "claude":
+        header = "Select model"
+        screen = await _wait_for_terminal_text(
+            session,
+            lambda value: (
+                header.lower() in value.lower()
+                and "use this session only" in value.lower()
+            ),
+        )
+        model_needle = _runtime_model_needle(agent, model)
+        if model_needle:
+            await _select_numbered_terminal_option(
+                session, header=header, target=model_needle,
+            )
+        effort_label = _runtime_effort_label(agent, effort)
+        if effort_label:
+            seen: set[str] = set()
+            for _ in range(8):
+                screen = tmux_capture(session, history=False)
+                current = _claude_effort_from_menu(screen)
+                if current == effort_label:
+                    break
+                if not current or current in seen:
+                    raise RuntimeError(
+                        f"Claude does not expose effort {effort!r} in this menu"
+                    )
+                seen.add(current)
+                ok, err = tmux_send_key(session, "Right")
+                if not ok:
+                    raise RuntimeError(f"cannot adjust Claude effort: {err}")
+                await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError(
+                    f"Claude does not expose effort {effort!r} in this menu"
+                )
+        # Claude's `s` applies only to this session; Enter would also change
+        # the default for future sessions, which an API call must not do.
+        ok, err = tmux_send_key(session, "s")
+        if not ok:
+            raise RuntimeError(f"cannot apply Claude runtime config: {err}")
+        screen = await _wait_for_terminal_text(
+            session,
+            lambda value: (
+                "switch model?" in value.lower()
+                or _detect_agent_input_ready(value)
+            ),
+        )
+        if "switch model?" in screen.lower():
+            if model_needle and model_needle not in screen.lower():
+                raise RuntimeError(
+                    "Claude requested confirmation for an unexpected model"
+                )
+            ok, err = tmux_send_key(session, "Enter")
+            if not ok:
+                raise RuntimeError(f"cannot confirm Claude model switch: {err}")
+            await _wait_for_terminal_text(
+                session, _detect_agent_input_ready,
+            )
+        return {"model": model, "effort": effort}
+
+    tmux_send_key(session, "Escape")
+    raise RuntimeError("runtime configuration supports Codex and Claude sessions")
 
 
 async def _deliver_first_prompt(session: str, prompt: str,
@@ -9135,6 +9444,62 @@ def create_app(outputs_dir: Path, token: Optional[str] = None,
             raise HTTPException(500,
                 f"tmux send-keys failed ({len(text)} chars): {err}")
         return {"ok": ok, "session": session, "bytes_sent": len(text)}
+
+    @app.post("/api/sessions/{run_id}/runtime-config")
+    async def post_runtime_config(run_id: str, request: Request):
+        """Change an idle Codex/Claude session's model and effort in place."""
+        r = _lookup_run(outputs_dir, run_id)
+        if not r:
+            raise HTTPException(404, "run not found")
+        session = str(r.get("tmux_session") or "")
+        if not session or not tmux_alive(session):
+            raise HTTPException(409, "tmux session not alive")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, "invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body must be an object")
+        requested_model = str(body.get("model") or "").strip()
+        requested_effort = str(body.get("effort") or "").strip().lower()
+        if not requested_model and not requested_effort:
+            raise HTTPException(400, "model or effort is required")
+        if len(requested_model) > 128 or len(requested_effort) > 32:
+            raise HTTPException(400, "model or effort is too long")
+        agent = str(r.get("agent") or "").strip().lower()
+        model = requested_model or str(r.get("model") or "").strip()
+        effort = requested_effort or str(r.get("effort") or "").strip().lower()
+        try:
+            await _configure_agent_runtime(
+                session=session,
+                agent=agent,
+                model=requested_model,
+                effort=requested_effort,
+            )
+        except RuntimeError as exc:
+            # Leave the user's terminal at its normal prompt after any picker
+            # mismatch instead of stranding it inside a modal menu.
+            tmux_send_key(session, "Escape")
+            raise HTTPException(409, str(exc)) from exc
+
+        run_dir = str(r.get("run_dir") or "").strip()
+        if r.get("kind") == "run" and run_dir:
+            session_json = Path(run_dir) / "session.json"
+            if session_json.exists():
+                with edit_json(session_json) as data:
+                    data["model"] = model
+                    data["effort"] = effort
+                    data["runtime_config_updated_at"] = (
+                        datetime.now().astimezone().isoformat(timespec="seconds")
+                    )
+        session_snapshots.request_refresh()
+        return {
+            "ok": True,
+            "session": session,
+            "agent": agent,
+            "model": model,
+            "effort": effort,
+        }
 
     @app.post("/api/sessions/{run_id}/paste-image")
     async def post_paste_image(run_id: str, request: Request):

@@ -234,7 +234,8 @@ orch delegate --agent codex --model gpt-5.6-sol --effort high \
 The child appears in the Dashboard immediately. It inherits the parent
 workspace and Linked Items by default, while remaining an independent tmux
 session. Agents can also list sessions, read a bounded head or tail of their
-TTY history, and send follow-ups through `orch session` commands. See the
+TTY history, inspect live status, send follow-ups, and change an idle
+Codex/Claude session's model or effort through `orch session` commands. See the
 [agent delegation guide](docs/agent-delegation.md) for the complete workflow,
 idempotent automation, and remote-node behavior.
 

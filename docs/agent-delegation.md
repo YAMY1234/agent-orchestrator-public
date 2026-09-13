@@ -45,6 +45,8 @@ that key with different parameters is rejected.
 ```bash
 orch session list --alive
 orch session list --alive --json
+orch session status <run-id>
+orch session status <run-id> --json
 
 orch session read "$ORCH_RUN_ID" --head -n 80
 orch session read <run-id> -n 200
@@ -66,6 +68,29 @@ orch session send <run-id> --file ./follow-up.md
 The default submits the text with Enter. Add `--no-enter` to stage text in the
 target input without submitting it.
 
+Codex goals use the same message path, for example:
+
+```bash
+orch session send <run-id> "/goal Investigate the regression and preserve evidence."
+orch session send <run-id> "/goal edit"
+orch session send <run-id> "/goal clear"
+```
+
+## Change model or effort in place
+
+When a Codex or Claude Code session is waiting at its normal input prompt, its
+runtime selection can be changed without recreating the session:
+
+```bash
+orch session configure <run-id> --model gpt-5.6-sol --effort high
+orch session configure <run-id> --model fable --effort xhigh
+```
+
+The command drives the agent's native model picker and rejects unavailable
+choices instead of silently substituting another model or effort. Claude Code
+changes apply only to the selected session and do not alter its default for
+future sessions. Configuration is rejected while the agent is working.
+
 ## Local and remote nodes
 
 New sessions receive `ORCH_DASHBOARD_URL`, pointing at the Dashboard on their
@@ -86,8 +111,10 @@ The CLI is a thin client for these authenticated Dashboard routes:
 
 - `POST /api/delegate`
 - `GET /api/sessions`
+- `GET /api/sessions/{run_id}`
 - `GET /api/sessions/{run_id}/read?lines=200&position=tail`
 - `POST /api/sessions/{run_id}/send`
+- `POST /api/sessions/{run_id}/runtime-config`
 
 `POST /api/delegate` accepts `parent_run_id`, `agent`, `model`, `effort`,
 `label`, `cwd`, `priority`, `prompt`, `inherit_linked_items`, and an optional
